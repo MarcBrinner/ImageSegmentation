@@ -1,13 +1,30 @@
 import numpy as np
 import load_images
 import time
-from scipy.ndimage.filters import median_filter
+from scipy.ndimage.filters import uniform_filter
 from numba import njit
 
-neighborhood_value = 5
+neighborhood_value = 10
+
+@njit()
+def uniform_filter_without_zero(image, size):
+    shape = np.shape(image)
+    new_image = np.zeros(shape)
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            counter = 0
+            sum = 0
+            for k in range(max(0, i-size), min(shape[0]-1, i+size+1)):
+                for l in range(max(0, j-size), min(shape[1]-1, j+size+1)):
+                    if image[k][l] > 0.001:
+                        counter += 1
+                        sum += image[k][l]
+            if counter > 0:
+                new_image[i][j] = sum/counter
+    return new_image
 
 def convert_depth_image(image):
-    new_image = median_filter(image, size=5)
+    new_image = uniform_filter_without_zero(image, size=1)
     #new_image = median_filter(new_image, size=5)
     #new_image = image.copy()
     new_image = np.log10(new_image, where=new_image != 0)
@@ -36,12 +53,11 @@ def convert_depth_image(image):
 def calculate_normals(image):
     return_array = np.zeros((np.shape(image)[0], np.shape(image)[1], 3))
     square_length = neighborhood_value*2+1
-    sigma = np.array((0.15, 0.15, 40.0))
+    sigma = np.array((0.005, 0.005, 0))
     height, width = np.shape(image)
     for i in range(height):
-        #i = 100
-        values_y = list(range(max(i - 3, 0), min(i + 4, height - 1)))
-        values_x = list(range(0, 3))
+        values_y = list(range(max(i - neighborhood_value, 0), min(i + neighborhood_value + 1, height - 1)))
+        values_x = list(range(0, neighborhood_value))
         outputs = np.zeros(square_length**2)
         inputs = np.zeros((square_length**2, 3), dtype="float64")
         points = np.zeros((square_length**2, 3), dtype="float64")
@@ -74,6 +90,7 @@ def calculate_normals(image):
             diff = points - np.asarray([j, i, image[i][j]])
 
             weights = np.expand_dims(np.exp(-np.sum(diff*sigma*diff, axis=-1)), axis=-1)
+            #weights = np.ones((square_length**2, 1))
             mean = np.sum(inputs, axis=0)/np.sum(active)
             mean[2] = 0
             centered_inputs = inputs - mean
@@ -86,14 +103,21 @@ def calculate_normals(image):
                 fill_index = 0
             n = np.linalg.norm(vec)
             if n > 0:
-                if vec[2] < 0:
-                    vec = -vec
+                vec = -vec
                 vec[2] = 1
                 vec = vec/np.linalg.norm(vec)
             #if vec[0] < 0:
             #    vec = -vec
             return_array[i][j] = vec
     return return_array
+
+def normals_CP(image):
+    height, width = np.shape(image)
+    return_array = np.zeros((height, width))
+    for i in range(1, height-1):
+        for j in range(1, width-1):
+            depth_dif = image[i-1][j] - image[i+1][j]
+
 
 if __name__ == '__main__':
     image, _ = load_images.load_image(110)

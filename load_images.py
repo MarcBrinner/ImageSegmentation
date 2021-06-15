@@ -11,7 +11,6 @@ def sorted_alphanumeric(data):
 def load_image(index):
     files = os.listdir("Data/disparity")
     files = sorted_alphanumeric(files)
-    print(files)
     file = files[index]
     depth_image = Image.open(f"Data/disparity/{file}")
     RGB_image = Image.open(f"Data/RGB/{file}")
