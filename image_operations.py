@@ -1,16 +1,29 @@
 import numpy as np
 import load_images
 import time
+from PIL import ImageCms, Image
+import math
 from scipy.ndimage.filters import uniform_filter
 from numba import njit
 
 neighborhood_value = 10
+
+def rgb_to_Lab(image):
+    image = Image.fromarray(image)
+
+    srgb_profile = ImageCms.createProfile("sRGB")
+    lab_profile = ImageCms.createProfile("LAB")
+
+    rgb2lab_transform = ImageCms.buildTransformFromOpenProfiles(srgb_profile, lab_profile, "RGB", "LAB")
+    lab_im = np.asarray(ImageCms.applyTransform(image, rgb2lab_transform))
+    return lab_im
 
 @njit()
 def uniform_filter_without_zero(image, size):
     shape = np.shape(image)
     new_image = np.zeros(shape)
     for i in range(shape[0]):
+        print(i)
         for j in range(shape[1]):
             counter = 0
             sum = 0
@@ -21,6 +34,34 @@ def uniform_filter_without_zero(image, size):
                         sum += image[k][l]
             if counter > 0:
                 new_image[i][j] = sum/counter
+    return new_image
+
+@njit()
+def context_aware_smoothing(depth_image, lab_image, size):
+    height, width = np.shape(depth_image)
+    factor_x = math.tan(31) * 2 / width
+    factor_y = math.tan(31) * 2 / height
+    sigma_weights = np.asarray([0.2, 1, 0.01])
+    new_image = np.zeros((height, width))
+    for i in range(height):
+        print(i)
+        for j in range(width):
+            weights = 0
+            sum = 0
+            d = depth_image[i][j]
+            distance_factor_x = d * factor_x
+            distance_factor_y = d * factor_y
+            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
+                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+                    if depth_image[k][l] != 0:
+                        difference = (k-i)**2 * sigma_weights[0] + (l-j)**2 * sigma_weights[0] +\
+                                     (np.log10(d)-np.log10(image[k][l]))**2 * sigma_weights[1] +\
+                                     np.sum(np.square(np.subtract(lab_image[i][j], lab_image[k][l])))*sigma_weights[2]
+                        weight = np.exp(-difference)
+                        weights += weight
+                        sum += weight*depth_image[k][l]
+            if weights > 0:
+                new_image[i][j] = sum/weights
     return new_image
 
 def convert_depth_image(image):
@@ -111,16 +152,39 @@ def calculate_normals(image):
             return_array[i][j] = vec
     return return_array
 
+@njit()
 def normals_CP(image):
     height, width = np.shape(image)
-    return_array = np.zeros((height, width))
+    factor_x = math.tan(31) * 2 / width
+    factor_y = math.tan(31) * 2 / height
+    return_array = np.zeros((height, width, 3))
     for i in range(1, height-1):
         for j in range(1, width-1):
             depth_dif = image[i-1][j] - image[i+1][j]
+            vec_1 = [0, 2 * factor_y * image[i][j], depth_dif]
+
+            depth_dif = image[i][j+1] - image[i][j-1]
+            vec_2 = [2 * factor_x * image[i][j], 0, depth_dif]
+
+            cp = np.cross(vec_1, vec_2)
+            if cp[2] < 0:
+                cp = -cp
+            cp = cp/np.linalg.norm(cp)
+            return_array[i][j] = cp
+    return return_array
+
 
 
 if __name__ == '__main__':
-    image, _ = load_images.load_image(110)
+    image, rgb = load_images.load_image(110)
+    lab = rgb_to_Lab(rgb)
+    image = context_aware_smoothing(image, lab, 5)
+
+    #image = uniform_filter_without_zero(image, 1)
+    image = normals_CP(image)
+    image = np.asarray(image*127.5 + 127.5, dtype="uint8")
+    load_images.plot_array(image)
+    quit()
     image = convert_depth_image(image)
     image = calculate_normals(image)
     image = np.asarray(image*127.5 + 127.5, dtype="uint8")
