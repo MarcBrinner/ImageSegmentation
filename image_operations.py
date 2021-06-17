@@ -7,6 +7,8 @@ from scipy.ndimage.filters import uniform_filter
 from numba import njit
 
 neighborhood_value = 10
+viewing_angle_x = 62.0
+viewing_angle_y = 48.6
 
 def rgb_to_Lab(image):
     image = Image.fromarray(image)
@@ -23,7 +25,6 @@ def uniform_filter_without_zero(image, size):
     shape = np.shape(image)
     new_image = np.zeros(shape)
     for i in range(shape[0]):
-        print(i)
         for j in range(shape[1]):
             counter = 0
             sum = 0
@@ -36,31 +37,35 @@ def uniform_filter_without_zero(image, size):
                 new_image[i][j] = sum/counter
     return new_image
 
-@njit()
+#@njit()
 def context_aware_smoothing(depth_image, lab_image, size):
     height, width = np.shape(depth_image)
-    factor_x = math.tan(31) * 2 / width
-    factor_y = math.tan(31) * 2 / height
-    sigma_weights = np.asarray([0.2, 1, 0.01])
+    factor_x = math.tan(viewing_angle_x/2) * 2 / width
+    factor_y = math.tan(viewing_angle_y/2) * 2 / height
+    sigma_weights = np.asarray([0.02, 0.01, 1])
     new_image = np.zeros((height, width))
     for i in range(height):
-        print(i)
         for j in range(width):
-            weights = 0
+            weights = []
             sum = 0
             d = depth_image[i][j]
             distance_factor_x = d * factor_x
             distance_factor_y = d * factor_y
             for k in range(max(0, i - size), min(height - 1, i + size + 1)):
                 for l in range(max(0, j - size), min(width - 1, j + size + 1)):
-                    if depth_image[k][l] != 0:
+                    if depth_image[k][l] > 0.00001 and k != l:
+                        depth_normalizer = math.sqrt((abs(k-i)*distance_factor_y)**2 + ((l-j)/distance_factor_x)**2)
                         difference = (k-i)**2 * sigma_weights[0] + (l-j)**2 * sigma_weights[0] +\
-                                     (np.log10(d)-np.log10(image[k][l]))**2 * sigma_weights[1] +\
-                                     np.sum(np.square(np.subtract(lab_image[i][j], lab_image[k][l])))*sigma_weights[2]
+                                     np.sum(np.square(np.subtract(lab_image[i][j], lab_image[k][l])))*sigma_weights[1] +\
+                                     ((depth_image[k][l] - d)/depth_normalizer)**2 * sigma_weights[2]
                         weight = np.exp(-difference)
-                        weights += weight
+                        weights.append(weight)
                         sum += weight*depth_image[k][l]
-            if weights > 0:
+            if len(weights) > 0:
+                weight = 2 * np.max(np.asarray(weights))
+                weights.append(weight)
+                sum += d * weight
+                weights = np.sum(np.asarray(weights))
                 new_image[i][j] = sum/weights
     return new_image
 
