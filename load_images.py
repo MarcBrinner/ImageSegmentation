@@ -16,14 +16,5 @@ def load_image(index):
     RGB_image = Image.open(f"Data/RGB/{file}")
     return np.asarray(depth_image), np.asarray(RGB_image)
 
-def plot_array(array, normalize=False):
-    plot_array = np.copy(array)
-    if normalize:
-        plot_array = plot_array + np.min(plot_array)
-        plot_array = np.asarray(plot_array / np.max(plot_array) * 255, dtype="unint8")
-
-    image = Image.fromarray(plot_array)
-    image.show()
-
 if __name__ == '__main__':
     load_image(0)
