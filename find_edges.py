@@ -1,7 +1,5 @@
-import math
-import numpy as np
-from numba import njit
-from image_operations import viewing_angle_y, viewing_angle_x
+from plot_image import *
+from calculate_normals import *
 
 @njit()
 def find_edges_from_depth_image(image):
@@ -92,3 +90,18 @@ def find_edges_from_normal_image_3(image, depth_image, alpha=0.85):
             if sum < alpha:
                 edge_image[i][j] = 1.0
     return edge_image
+
+def find_normal_vector_edges_like_paper(depth_image):
+    median_filtered_image = median_filter(depth_image, 3)
+    normals = calculate_normals_cross_product(median_filtered_image)
+    plot_image = np.asarray(normals * 127.5 + 127.5, dtype="uint8")
+    plot_array(plot_image)
+    normals = gaussian_filter(normals, 2, 0.5)
+    plot_image = np.asarray(normals * 127.5 + 127.5, dtype="uint8")
+    plot_array(plot_image)
+    edges = find_edges_from_normal_image_3(normals, depth_image, alpha=0.99)
+    for i in range(5):
+        edges = do_iteration(edges, 5)
+    plot_image = np.asarray(edges * 255, dtype="uint8")
+    plot_array(plot_image)
+    return edges

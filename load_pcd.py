@@ -3,7 +3,6 @@ import open3d as o3d
 import os
 import load_images
 from scipy.spatial.transform import Rotation
-from PIL import Image
 
 def load_image_as_point_cloud(index):
     files = os.listdir("Data/pcd")
@@ -81,20 +80,6 @@ def extract_RGB_image(pcd):
         image[y][x] = color
     return image
 
-def plot_array(array):
-    image = Image.fromarray(array)
-    image.show()
 
 if __name__ == '__main__':
-    #depth_image, _ = load_images.load_image(110)
-    #load_images.plot_array(depth_image, normalize=False)
-    pcd = load_image_as_point_cloud(110)
-    image = extract_depth_image(pcd)
-    load_images.plot_array(image)
-    quit()
-    #print(image)
-    #print(np.shape(image))
-    plot_array(image)
-    image = extract_RGB_image(pcd)
-    plot_array(image)
-    show_3D_plot(pcd)
+    pass

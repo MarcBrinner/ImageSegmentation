@@ -1,7 +1,5 @@
-import numpy as np
-import math
-from numba import njit
-from image_operations import viewing_angle_x, viewing_angle_y, calculate_curvature_scores
+from image_filters import *
+from image_operations import calculate_curvature_scores
 
 @njit()
 def calculate_normals_plane_fitting(image, neighborhood_size):
@@ -139,3 +137,9 @@ def calculate_normals_cross_product(image):
                 cp = cp/np.linalg.norm(cp)
             return_array[i][j] = cp
     return return_array
+
+def calculate_normal_vectors_like_paper(depth_image):
+    smoothed = median_filter(depth_image, 3)
+    normals = calculate_normals_cross_product(smoothed)
+    normals = gaussian_filter(normals, 2, 0.5)
+    return normals

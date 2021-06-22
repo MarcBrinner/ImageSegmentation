@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.ndimage.filters
 import math
-import image_operations
+from image_operations import viewing_angle_y, viewing_angle_x
 from numba import njit
 
 def median_filter(image, size):
@@ -47,9 +47,9 @@ def uniform_filter_without_zero(image, size):
 @njit()
 def gaussian_filter_with_context(depth_image, lab_image, size):
     height, width = np.shape(depth_image)
-    factor_x = math.tan(image_operations.viewing_angle_x/2) * 2 / width
-    factor_y = math.tan(image_operations.viewing_angle_y/2) * 2 / height
-    #sigma_weights = np.asarray([0.01, 0.003, 0.01])
+    factor_x = math.tan(viewing_angle_x/2) * 2 / width
+    factor_y = math.tan(viewing_angle_y/2) * 2 / height
+    #sigma_weights = np.asarray([0.01, 0.003, 0.1])
     sigma_weights = np.asarray([0, 0, 0])
     new_image = np.zeros((height, width))
     for i in range(height):

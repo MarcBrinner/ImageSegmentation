@@ -1,8 +1,5 @@
 import numpy as np
-import load_images
 import math
-from plot_image import *
-from image_filters import *
 from PIL import ImageCms, Image
 from numba import njit
 
@@ -20,7 +17,7 @@ def rgb_to_Lab(image):
     lab_im = np.asarray(ImageCms.applyTransform(image, rgb2lab_transform))
     return lab_im
 
-def convert_depth_image(image, plot=False):
+def convert_depth_image(image):
     new_image = np.log10(image, where=image != 0)
 
     min = np.min(new_image, where=image != 0, initial=np.inf)
@@ -31,8 +28,6 @@ def convert_depth_image(image, plot=False):
     new_image = (1 - new_image) * 0.85 + 0.15
     new_image[image == 0] = 0
 
-    if plot:
-        plot_array(new_image*255)
     return new_image
 
 @njit()
@@ -84,67 +79,5 @@ def calculate_curvature_scores(image, neighborhood_value, i, j, factor_array, d,
     return curvature_scores
 
 
-def find_planes(depth_image, normals):
-    assignments = np.zeros(np.shape(depth_image), dtype="uint8")
-    height, width = np.shape(image)
-    for i in range(height):
-        for j in range(width):
-            if depth_image[j][i] < 0.0001 or assignments[j][i] != 0:
-                continue
-
-def determine_normal_vectors_final(depth_image, rgb_image):
-    lab = rgb_to_Lab(rgb_image)
-    smoothed = gaussian_filter_with_context(depth_image, lab, 3)
-    normals = normals_CP(smoothed)
-    return normals
-
-def determine_normal_vectors_like_paper(depth_image):
-    median_filtered_image = median_filter(depth_image, 3)
-    normals = normals_CP(median_filtered_image)
-    plot_image = np.asarray(normals * 127.5 + 127.5, dtype="uint8")
-    load_images.plot_array(plot_image)
-    normals = gaussian_filter(normals, 2, 0.5)
-    plot_image = np.asarray(normals * 127.5 + 127.5, dtype="uint8")
-    load_images.plot_array(plot_image)
-    edges = find_edges_from_normal_image_3(normals, depth_image, alpha=0.99)
-    for i in range(5):
-        edges = do_iteration(edges, 5)
-    plot_image = np.asarray(edges * 255, dtype="uint8")
-    load_images.plot_array(plot_image)
-    quit()
-
-
 if __name__ == '__main__':
-    image, rgb = load_images.load_image(110)
-    determine_normal_vectors_like_paper(image)
-
-    lab = rgb_to_Lab(rgb)
-    smoothed = gaussian_filter_with_context(image, lab, 3)
-
-    #image = uniform_filter_without_zero(image, 1)
-    #image = normals_CP(image)
-    #normals2 = calculate_normals_2(image)
-    #normals = calculate_normals_2(image)
-    normals = normals_CP(smoothed)
-    edges = find_edges_from_normal_image_3(normals, image)
-    load_images.plot_array(np.asarray(edges*255, dtype="uint8"))
-    quit()
-    edges = do_iteration(edges, 5)
-    edges = do_iteration(edges, 5)
-    edges = do_iteration(edges, 6)
-    edges = do_iteration(edges, 6)
-    load_images.plot_array(np.asarray(edges*255, dtype="uint8"))
-    #quit()
-    #normals_im = np.asarray(normals*127.5 + 127.5, dtype="uint8")
-    #normals_im_2 = np.asarray(normals*127.5 + 127.5, dtype="uint8")
-
-    #PLT.imshow(rgb)
-    #PLT.show()
-    #load_images.plot_array(normals_im)
-    #load_images.plot_array(normals_im_2)
-
-    quit()
-    image = convert_depth_image(image)
-    image = calculate_normals(image)
-    image = np.asarray(image*127.5 + 127.5, dtype="uint8")
-    load_images.plot_array(image)
+    pass
