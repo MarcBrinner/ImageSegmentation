@@ -45,12 +45,12 @@ def uniform_filter_without_zero(image, size):
     return new_image
 
 @njit()
-def gaussian_filter_with_context(depth_image, lab_image, size):
+def gaussian_filter_with_depth_factor(depth_image, size, sigma=None):
     height, width = np.shape(depth_image)
     factor_x = math.tan(viewing_angle_x/2) * 2 / width
     factor_y = math.tan(viewing_angle_y/2) * 2 / height
-    #sigma_weights = np.asarray([0.01, 0.003, 0.1])
-    sigma_weights = np.asarray([0, 0, 0])
+    if sigma == None:
+        sigma = np.asarray([0, 0.0001])
     new_image = np.zeros((height, width))
     for i in range(height):
         for j in range(width):
@@ -66,14 +66,13 @@ def gaussian_filter_with_context(depth_image, lab_image, size):
                     if depth_image[k][l] > 0.00001 and (k != i or j != l):
                         percentage = abs(k-i)/(abs(k-i) + abs(l-j))
                         depth_normalizer = percentage * distance_factor_y + (1-percentage) * distance_factor_x
-                        difference = math.sqrt((k-i)**2 + (l-j)**2) * sigma_weights[0] +\
-                                     np.sum(np.square(np.subtract(lab_image[i][j], lab_image[k][l])))*sigma_weights[1] +\
-                                     ((depth_image[k][l] - d)/depth_normalizer)**2 * sigma_weights[2]
+                        difference = math.sqrt((k-i)**2 + (l-j)**2) * sigma[0] +\
+                                     ((depth_image[k][l] - d)/depth_normalizer)**2 * sigma[1]
                         weight = np.exp(-difference)
                         weights.append(weight)
                         sum += weight*depth_image[k][l]
             if len(weights) > 0:
-                weight = 0 * np.max(np.asarray(weights))
+                weight = 1 * np.max(np.asarray(weights))
                 weights.append(weight)
                 sum += d * weight
                 weights = np.sum(np.asarray(weights))

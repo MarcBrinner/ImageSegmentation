@@ -138,6 +138,12 @@ def calculate_normals_cross_product(image):
             return_array[i][j] = cp
     return return_array
 
+@njit()
+def calculate_normals_final(depth_image):
+    smoothed = uniform_filter_without_zero(depth_image, 3)
+    normals = calculate_normals_cross_product(smoothed)
+    return normals
+
 def calculate_normal_vectors_like_paper(depth_image):
     smoothed = median_filter(depth_image, 3)
     normals = calculate_normals_cross_product(smoothed)

@@ -15,6 +15,7 @@ def rgb_to_Lab(image):
 
     rgb2lab_transform = ImageCms.buildTransformFromOpenProfiles(srgb_profile, lab_profile, "RGB", "LAB")
     lab_im = np.asarray(ImageCms.applyTransform(image, rgb2lab_transform))
+
     return lab_im
 
 def convert_depth_image(image):
