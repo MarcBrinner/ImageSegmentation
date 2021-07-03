@@ -1,5 +1,7 @@
 from image_filters import *
 from image_operations import calculate_curvature_scores
+from scipy.spatial.transform import Rotation
+from plot_image import plot_array
 
 @njit()
 def calculate_normals_plane_fitting(image, neighborhood_size):
@@ -139,13 +141,51 @@ def calculate_normals_cross_product(image):
     return return_array
 
 @njit()
-def calculate_normals_final(depth_image):
-    smoothed = uniform_filter_without_zero(depth_image, 3)
-    normals = calculate_normals_cross_product(smoothed)
+def calc_angle(vec_1, vec_2):
+    return math.acos(np.dot(vec_1, vec_2)/(np.linalg.norm(vec_1)*np.linalg.norm(vec_2)))
+
+@njit()
+def normals_to_angles(normal_image):
+    height, width, x = np.shape(normal_image)
+    angles = np.zeros((height, width, 2))
+    for y in range(height):
+        for x in range(width):
+            vec = normal_image[y][x]
+            if np.linalg.norm(vec) < 0.001: continue
+
+            vec_proj = vec.copy()
+            vec_proj[0] = 0
+            angles[y][x][0] = math.acos(-vec_proj[2]/(np.linalg.norm(vec_proj))) * np.sign(vec_proj[1])
+
+            vec_proj = vec.copy()
+            vec_proj[1] = 0
+            angles[y][x][1] = math.acos(-vec_proj[2]/(np.linalg.norm(vec_proj))) * -np.sign(vec_proj[0])
+    return angles
+
+def angles_to_normals(angles, depth_image):
+    height, width, _ = np.shape(angles)
+    normals = np.zeros((height, width, 3))
+    axis_1 = np.asarray([1.0, 0.0, 0.0])
+    axis_2 = np.asarray([0.0, 1.0, 0.0])
+    middle_vector = np.asarray([0, 0, -1])
+    for y in range(height):
+        for x in range(width):
+            if depth_image[y][x] < 0.0001:
+                continue
+            vec = middle_vector.copy()
+            rot = Rotation.from_rotvec(angles[y][x][0] * axis_1)
+            vec = rot.apply(vec)
+            rot = Rotation.from_rotvec(angles[y][x][1] * axis_2)
+            vec = rot.apply(vec)
+            normals[y][x] = vec
     return normals
 
-def calculate_normal_vectors_like_paper(depth_image):
-    smoothed = median_filter(depth_image, 3)
+@njit()
+def calculate_normals_as_angles_final(depth_image):
+    smoothed = uniform_filter_without_zero(depth_image, 2)
     normals = calculate_normals_cross_product(smoothed)
-    normals = gaussian_filter(normals, 2, 0.5)
-    return normals
+    angles = normals_to_angles(normals)
+    angles = gaussian_filter_with_depth_check(angles, 5, 2, depth_image, np.asarray([math.pi, math.pi]))
+    # new_normals = angles_to_normals(angles, depth_image)
+    # plot_array(np.asarray(new_normals*127.5+127.5, dtype="uint8"))
+    return angles

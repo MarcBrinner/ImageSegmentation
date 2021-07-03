@@ -54,7 +54,7 @@ def mean_field_update_model(number_of_pixels, number_of_surfaces, Q, features_1,
 
     messages = tf.scalar_mul(weight, tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(Q)), Q), axis=1))
 
-    compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=1), [1, number_of_surfaces, 1])), axis=1)
+    compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=1), [1, number_of_surfaces, 1])), axis=-1)
     potentials = tf.exp(-unary_potentials - compatibility_values)
 
     output = tf.truediv(potentials, tf.broadcast_to(tf.reduce_sum(potentials, axis=-1, keepdims=True), tf.shape(potentials)))

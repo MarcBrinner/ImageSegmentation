@@ -201,11 +201,11 @@ def get_unary_potentials(surface_image, number_of_labels):
                 unary_potentials[index][surface_image[y][x]] += 0.7
                 unary_potentials[index][0] = 0
             index += 1
-    return 1-unary_potentials
+    return unary_potentials
 
 @njit()
 def extract_features(depth_image, lab_image):
-    normal_image = calculate_normals_final(depth_image)
+    angle_image = calculate_normals_as_angles_final(depth_image)
     height, width = np.shape(depth_image)
     features_1 = np.zeros((height * width, 2))
     features_2 = np.zeros((height * width, 3))
@@ -216,7 +216,7 @@ def extract_features(depth_image, lab_image):
             features_1[y*width + x] = np.asarray([y, x])
             features_2[y*width + x] = np.asarray([y, x, depth_image[y][x]])
             features_3[y*width + x] = np.asarray([y, x, lab_image[y][x][0], lab_image[y][x][1], lab_image[y][x][2]])
-            features_4[y*width + x] = np.asarray([y, x, normal_image[y][x][0], normal_image[y][x][1], normal_image[y][x][2]])
+            features_4[y*width + x] = np.asarray([y, x, angle_image[y][x][0], angle_image[y][x][1]])
     return features_1, features_2, features_3, features_4
 
 @njit(parallel=True)
@@ -252,15 +252,16 @@ def mean_field_update(Q, unary_potentials, features, theta_1, theta_2, theta_3, 
         Q_new[index] = Q_new[index] / np.sum(Q_new[index])
     return Q_new
 
-def mean_field_update_NN(Q, unary_potentials, features, theta_1, theta_2, theta_3, theta_4, w_1, w_2, w_3, w_4, weight, number_of_labels, batch_size = 32):
+def mean_field_update_NN(Q, unary_potentials, features, theta_1, theta_2, theta_3, theta_4, w_1, w_2, w_3, w_4, weight, number_of_labels, batch_size = 64):
     features_1, features_2, features_3, features_4 = features
     n, _ = np.shape(features_1)
 
     matrix = np.ones((number_of_labels, number_of_labels)) - np.identity(number_of_labels)
     MFI_NN = mean_field_update_model(n, number_of_labels, Q, features_1, features_2, features_3, features_4, matrix, w_1, w_2, w_3, w_4, theta_1, theta_2, theta_3, theta_4, weight, batch_size)
-    #test_index = 80000
+    #test_index = 163610
     #out = MFI_NN.predict([features_1[test_index:test_index+batch_size], features_2[test_index:test_index+batch_size],
     #                      features_3[test_index:test_index+batch_size], features_4[test_index:test_index+batch_size], unary_potentials[test_index:test_index+batch_size]], batch_size=batch_size)
+    #print()
     Q_new = MFI_NN.predict([features_1, features_2, features_3, features_4, unary_potentials], batch_size=batch_size)
 
     return Q_new
@@ -303,9 +304,9 @@ def assign_all_pixels_to_surfaces(surface_image, depth_image, rgb_image, load_it
     if load_iteration >= 1:
         Q = np.load(f"it_{load_iteration}.npy")
     else:
-        Q = 1-unary_potentials
+        Q = unary_potentials
     new_Q = mean_field_update_NN(Q, unary_potentials, features, np.asarray([[1/25, 1/25]]), np.asarray([[1/80, 1/80, 100]]),
-                                 np.asarray([[1/100, 1/100, 1/100, 1/100, 1/100]]), np.asarray([[1/200, 1/200, 100, 100, 100]]), 0.05, 0.5, 0.5, 1.5, 0.01, number_of_labels)#0.0001
+                                 np.asarray([[1/100, 1/100, 1/100, 1/100, 1/100]]), np.asarray([[1/200, 1/200, 11, 11]]), 0.05, 0.2, 1, 1.5, 0.01, number_of_labels)#0.0001
     np.save(f"it_{load_iteration+1}.npy", new_Q)
     print("Mean field update 1 done.")
     plot_surfaces(new_Q)
@@ -317,6 +318,7 @@ def find_surfaces(depth_image, rgb_image):
 
 def main():
     images = load_image(110)
+
     #plt.imshow(images[1])
     #plt.show()
     #quit()
@@ -324,8 +326,8 @@ def main():
     #plot_array(surfaces, normalize=True)
 
 if __name__ == '__main__':
-    Q = np.load("it_1.npy")
-    print(np.sum(Q < 700) / np.sum(Q > 0))
-    print(np.min(Q))
-    quit()
+    #Q = np.load("it_1.npy")
+    #print(np.sum(Q < 700) / np.sum(Q > 0))
+    #print(np.min(Q))
+    #quit()
     main()

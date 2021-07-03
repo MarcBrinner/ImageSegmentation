@@ -8,25 +8,47 @@ def median_filter(image, size):
     return scipy.ndimage.filters.median_filter(image, size)
 
 @njit()
-def gaussian_filter(image, size, sigma):
-    height, width = np.shape(image)[0], np.shape(image)[1]
+def gaussian_filter_with_norm_check(image, size, sigma):
+    height, width, dim = np.shape(image)
     new_image = np.zeros(np.shape(image))
+    sigma = 1/sigma**2
     for i in range(height):
         for j in range(width):
             if np.linalg.norm(image[i][j]) < 0.0001:
                 continue
             weights = 0
-            sum = np.zeros(3)
+            sum = np.zeros(dim)
             for k in range(max(0, i - size), min(height - 1, i + size + 1)):
                 for l in range(max(0, j - size), min(width - 1, j + size + 1)):
                     if np.linalg.norm(image[k][l]) > 0.0001:
                         weight = np.exp(-sigma*((i-k)**2 + (j-l)**2))
                         weights += weight
                         sum += weight*image[k][l]
+            if weights > 0:
+                sum = sum / np.linalg.norm(sum)
+                new_image[i][j] = sum
+    return new_image
+
+@njit()
+def gaussian_filter_with_depth_check(image, size, sigma, depth_image, none_value):
+    height, width, dim = np.shape(image)
+    new_image = np.zeros(np.shape(image))
+    sigma = 1 / sigma ** 2
+    for i in range(height):
+        for j in range(width):
+            if depth_image[i][j] < 0.0001:
+                new_image[i][j] = none_value.copy()
+            weights = 0
+            sum = np.zeros(dim)
+            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
+                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+                    if depth_image[i][j] > 0.0001:
+                        weight = np.exp(-sigma * ((i - k) ** 2 + (j - l) ** 2))
+                        weights += weight
+                        sum += weight * image[k][l]
             sum = sum / np.linalg.norm(sum)
             new_image[i][j] = sum
     return new_image
-
 @njit()
 def uniform_filter_without_zero(image, size):
     shape = np.shape(image)
