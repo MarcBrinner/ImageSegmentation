@@ -38,6 +38,7 @@ def gaussian_filter_with_depth_check(image, size, sigma, depth_image, none_value
         for j in range(width):
             if depth_image[i][j] < 0.0001:
                 new_image[i][j] = none_value.copy()
+                continue
             weights = 0
             sum = np.zeros(dim)
             for k in range(max(0, i - size), min(height - 1, i + size + 1)):
@@ -46,8 +47,11 @@ def gaussian_filter_with_depth_check(image, size, sigma, depth_image, none_value
                         weight = np.exp(-sigma * ((i - k) ** 2 + (j - l) ** 2))
                         weights += weight
                         sum += weight * image[k][l]
-            sum = sum / np.linalg.norm(sum)
-            new_image[i][j] = sum
+            if weights > 0:
+                sum = sum / np.linalg.norm(sum)
+                new_image[i][j] = sum
+            else:
+                new_image[i][j] = none_value.copy()
     return new_image
 @njit()
 def uniform_filter_without_zero(image, size):

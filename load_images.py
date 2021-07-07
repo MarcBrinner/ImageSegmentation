@@ -14,7 +14,8 @@ def load_image(index):
     file = files[index]
     depth_image = Image.open(f"Data/disparity/{file}")
     RGB_image = Image.open(f"Data/RGB/{file}")
-    return np.asarray(depth_image), np.asarray(RGB_image)
+    annotation = Image.open(f"Data/annotation/{file}")
+    return np.asarray(depth_image), np.asarray(RGB_image), np.asarray(annotation)
 
 if __name__ == '__main__':
     load_image(0)

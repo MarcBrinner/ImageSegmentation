@@ -181,11 +181,9 @@ def angles_to_normals(angles, depth_image):
     return normals
 
 @njit()
-def calculate_normals_as_angles_final(depth_image):
+def calculate_normals_as_angles_final(depth_image, plot_normals=False):
     smoothed = uniform_filter_without_zero(depth_image, 2)
     normals = calculate_normals_cross_product(smoothed)
     angles = normals_to_angles(normals)
     angles = gaussian_filter_with_depth_check(angles, 5, 2, depth_image, np.asarray([math.pi, math.pi]))
-    # new_normals = angles_to_normals(angles, depth_image)
-    # plot_array(np.asarray(new_normals*127.5+127.5, dtype="uint8"))
     return angles
