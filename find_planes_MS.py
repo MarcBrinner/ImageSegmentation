@@ -57,8 +57,6 @@ def find_annotation_correspondence(surfaces, annotation):
     return mapping
 
 def get_initial_guess_parameters():
-    #return [0.2, 0.2, 0.2, 0.2, 2.0, np.asarray([[1/25, 1/25]]), np.asarray([[1/80, 1/80, 100]]), np.asarray([[1/100, 1/100, 1/200, 1/200, 1/200]]), np.asarray([[1/200, 1/200, 11, 11]]),
-    #                             np.asarray([[1/300, 1/300, 50, 10, 10]]), 0.01]
     return [0.2, 0.2, 0.2, 0.2, 2.0, 1/25, 1/80, 100, 1/100, 1/200, 1/200, 11, 1/300, 50, 10, 0.01]
 
 def calculate_labels(surfaces, annotation, correspondence, number_of_surfaces):
@@ -115,18 +113,18 @@ def test_model_on_image(image_index, load_index=0, load_iteration=0, batch_size=
     if load_iteration >= 1:
         initial_Q = np.load(f"it_{load_iteration}.npy")
 
+    parameters = load_parameters(load_index)
+
     matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
     MFI_NN = mean_field_update_model_learned(480 * 640, number_of_surfaces, initial_Q, *features,
-                                             matrix, *get_initial_guess_parameters(), batch_size)
+                                             matrix, *parameters, batch_size)
 
-    if load_index >= 0:
-        load_parameters(MFI_NN, load_index)
-    weights = [l.weights for l in MFI_NN.layers]
-    test_index = 371 * 640 + 524
-    out = MFI_NN.predict([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],
-                         features[2][test_index:test_index+batch_size], features[3][test_index:test_index+batch_size],
-                         features[4][test_index:test_index+batch_size], unary_potentials[test_index:test_index+batch_size]], batch_size=batch_size)
-    print(out)
+
+    # test_index = 371 * 640 + 524
+    # out = MFI_NN.predict([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],
+    #                      features[2][test_index:test_index+batch_size], features[3][test_index:test_index+batch_size],
+    #                      features[4][test_index:test_index+batch_size], unary_potentials[test_index:test_index+batch_size]], batch_size=batch_size)
+    # print(out)
 
     Q = MFI_NN.predict([*features, unary_potentials], batch_size=batch_size)
     plot_surfaces(Q)
