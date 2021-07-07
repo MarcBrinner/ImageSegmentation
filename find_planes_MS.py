@@ -2,7 +2,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import time
 import multiprocessing
-from mean_field_update_tf import mean_field_update_model, mean_field_update_model_learned
+from mean_field_update_tf import mean_field_update_model, mean_field_update_model_learned, print_parameters, save_parameters, load_parameters
 from calculate_normals import *
 from plot_image import *
 from collections import Counter
@@ -14,7 +14,7 @@ from sklearn.cluster import KMeans
 from sklearn.cluster import DBSCAN
 from skimage import measure
 
-train_indices = [109, 106, 105]
+train_indices = [110, 109, 106, 105]
 
 @njit()
 def extract_data_points(depth_image, normal_image):
@@ -45,12 +45,6 @@ def find_planes_MS(depth_image, rgb_image):
             counter += 1
     plot_array(np.asarray(print_image*255, dtype="uint8"))
 
-def load_parameters(model, index=0):
-    model.load_weights(f"checkpoints/{index}.ckpt")
-
-def save_parameters(model, index=0):
-    model.save_weights(f"checkpoints/{index}.ckpt")
-
 def find_annotation_correspondence(surfaces, annotation):
     mapping = {i: set() for i in range(int(np.max(annotation)+1))}
     height, width = np.shape(surfaces)
@@ -79,7 +73,7 @@ def calculate_labels(surfaces, annotation, correspondence, number_of_surfaces):
     return np.asarray(labels, dtype="float64")
 
 
-def train_model_on_images(image_indices, load_index=-1, save_index=0, batch_size=8, epochs=1):
+def train_model_on_images(image_indices, load_index=0, save_index=0, batch_size=8, epochs=1):
     for epoch in range(epochs):
         for image_index in image_indices:
             print(f"Training on image {image_index}")
@@ -90,13 +84,15 @@ def train_model_on_images(image_indices, load_index=-1, save_index=0, batch_size
             number_of_surfaces = int(np.max(surfaces)+1)
             unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
 
+            if load_index >= 0:
+                parameters = load_parameters(load_index)
+            else:
+                parameters = get_initial_guess_parameters()
+                load_index = save_index
+
             matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
             MFI_NN = mean_field_update_model_learned(480*640, number_of_surfaces, initial_Q, *features,
-                                             matrix, *get_initial_guess_parameters(), batch_size)
-
-            if load_index >= 0:
-                load_parameters(MFI_NN, load_index)
-                load_index = save_index
+                                             matrix, *parameters, batch_size)
 
             Y = calculate_labels(surfaces, annotation, correspondence, number_of_surfaces)
             # test_index = 371 * 640 + 524

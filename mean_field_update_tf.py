@@ -2,6 +2,22 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
 
+variable_names = ["w_1", "w_2", "w_3", "w_4", "w_5", "theta_1_1", "theta_2_1", "theta_2_2", "theta_3_1", "theta_3_2", "theta_4_1", "theta_4_2", "theta_5_1", "theta_5_2", "theta_5_3", "weight"]
+
+def print_parameters(model):
+    for name in variable_names:
+        print(f"{name}: {model.get_layer(name).weights}")
+
+def save_parameters(model, index):
+    array = np.zeros(len(variable_names), dtype="float64")
+    for i in range(len(variable_names)):
+        array[i] = model.get_layer(variable_names[i]).weights[0].numpy()
+    print(array)
+    np.save(f"parameters/{index}.npy", array)
+
+def load_parameters(index):
+    return list(np.load(f"parameters/{index}.npy"))
+
 class Variable(layers.Layer):
     def __init__(self, initial_value, **kwargs):
         self.initial_value = initial_value
@@ -31,7 +47,6 @@ class Variable2(layers.Layer):
         super(Variable2, self).build(input_shape)
 
     def call(self, input_data):
-        print(self.kernel)
         return self.kernel
 
     def compute_output_shape(self, input_shape):
@@ -45,7 +60,6 @@ class Print_Tensor(layers.Layer):
         super(Print_Tensor, self).build(input_shape)
 
     def call(self, input_data):
-        print(input_data)
         return input_data
 
     def compute_output_shape(self, input_shape):
@@ -138,25 +152,22 @@ def mean_field_update_model_learned(number_of_pixels, number_of_surfaces, Q, fea
     feature_4 = layers.Input(shape=(4,), batch_size=batch_size, dtype=tf.float32)
     feature_5 = layers.Input(shape=(5,), batch_size=batch_size, dtype=tf.float32)
 
-    w_1 = Variable(w_1)(feature_1)
-    w_2 = Variable(w_2)(feature_1)
-    w_3 = Variable(w_3)(feature_1)
-    w_4 = Variable(w_4)(feature_1)
-    w_5 = Variable(w_5)(feature_1)
+    w_1 = Variable(w_1, name="w_1")(feature_1)
+    w_2 = Variable(w_2, name="w_2")(feature_1)
+    w_3 = Variable(w_3, name="w_3")(feature_1)
+    w_4 = Variable(w_4, name="w_4")(feature_1)
+    w_5 = Variable(w_5, name="w_5")(feature_1)
 
-    theta_1 = tf.expand_dims(tf.repeat(Variable(theta_1_1)(feature_1), repeats=[2], axis=-1), axis=0, name="Theta_1")
-    theta_2_1 = tf.expand_dims(tf.repeat(Variable(theta_2_1)(feature_1), repeats=[2], axis=-1), axis=0)
-    theta_2_2 = tf.expand_dims(tf.repeat(Variable(theta_2_2)(feature_1), repeats=[1], axis=-1), axis=0)
-    theta_3_1 = tf.expand_dims(tf.repeat(Variable(theta_3_1)(feature_1), repeats=[2], axis=-1), axis=0)
-    theta_3_2 = tf.expand_dims(tf.repeat(Variable(theta_3_2)(feature_1), repeats=[3], axis=-1), axis=0)
-    theta_4_1 = tf.expand_dims(tf.repeat(Variable(theta_4_1)(feature_1), repeats=[2], axis=-1), axis=0)
-    theta_4_2 = tf.expand_dims(tf.repeat(Variable(theta_4_2)(feature_1), repeats=[2], axis=-1), axis=0)
-    theta_5_1 = tf.expand_dims(tf.repeat(Variable(theta_5_1)(feature_1), repeats=[2], axis=-1), axis=0)
-    theta_5_2 = tf.expand_dims(tf.repeat(Variable(theta_5_2)(feature_1), repeats=[1], axis=-1), axis=0)
-    theta_5_3 = tf.expand_dims(tf.repeat(Variable(theta_5_3)(feature_1), repeats=[2], axis=-1), axis=0)
-
-    print(theta_2_1)
-    print(theta_2_2)
+    theta_1 = tf.expand_dims(tf.repeat(Variable(theta_1_1, name="theta_1_1")(feature_1), repeats=[2], axis=-1), axis=0, name="Theta_1")
+    theta_2_1 = tf.expand_dims(tf.repeat(Variable(theta_2_1, name="theta_2_1")(feature_1), repeats=[2], axis=-1), axis=0)
+    theta_2_2 = tf.expand_dims(tf.repeat(Variable(theta_2_2, name="theta_2_2")(feature_1), repeats=[1], axis=-1), axis=0)
+    theta_3_1 = tf.expand_dims(tf.repeat(Variable(theta_3_1, name="theta_3_1")(feature_1), repeats=[2], axis=-1), axis=0)
+    theta_3_2 = tf.expand_dims(tf.repeat(Variable(theta_3_2, name="theta_3_2")(feature_1), repeats=[3], axis=-1), axis=0)
+    theta_4_1 = tf.expand_dims(tf.repeat(Variable(theta_4_1, name="theta_4_1")(feature_1), repeats=[2], axis=-1), axis=0)
+    theta_4_2 = tf.expand_dims(tf.repeat(Variable(theta_4_2, name="theta_4_2")(feature_1), repeats=[2], axis=-1), axis=0)
+    theta_5_1 = tf.expand_dims(tf.repeat(Variable(theta_5_1, name="theta_5_1")(feature_1), repeats=[2], axis=-1), axis=0)
+    theta_5_2 = tf.expand_dims(tf.repeat(Variable(theta_5_2, name="theta_5_2")(feature_1), repeats=[1], axis=-1), axis=0)
+    theta_5_3 = tf.expand_dims(tf.repeat(Variable(theta_5_3, name="theta_5_3")(feature_1), repeats=[2], axis=-1), axis=0)
 
     theta_2 = tf.concat([theta_2_1, theta_2_2], axis=-1, name="Theta_2")
     theta_3 = tf.concat([theta_3_1, theta_3_2], axis=-1, name="Theta_3")
@@ -170,7 +181,7 @@ def mean_field_update_model_learned(number_of_pixels, number_of_surfaces, Q, fea
     theta_4 = tf.tile(tf.expand_dims(theta_4, axis=0), [batch_size, 1, 1])
     theta_5 = tf.tile(tf.expand_dims(theta_5, axis=0), [batch_size, 1, 1])
 
-    weight = Variable(weight)(feature_1)
+    weight = Variable(weight, name="weight")(feature_1)
 
     unary_potentials = layers.Input(shape=(number_of_surfaces,), batch_size=batch_size, dtype=tf.float32)
 
