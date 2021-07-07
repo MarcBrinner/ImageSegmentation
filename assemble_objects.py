@@ -77,3 +77,6 @@ def determine_convexity(normals, centroids, neighbors, number_of_surfaces):
                 convexity[i][j] = 0
                 continue
             diff = centroids[i] - centroids[j]
+
+def test():
+    pass
