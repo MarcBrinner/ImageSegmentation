@@ -228,6 +228,39 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     model.summary()
     return model
 
+def update_step(Q, similarities, matrix, weight, unary_potentials):
+    messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarities, axis=-1), tf.shape(Q)), Q),
+                             axis=1)
+    messages = layers.Multiply()([Variable2(weight, name="weight")(messages), messages])
+
+    compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=1), [1, number_of_surfaces, 1])), axis=-1)
+    add = layers.Add(activity_regularizer=regularizers.l2(0.001))([unary_potentials, compatibility_values])
+
+    Q_new = layers.Softmax()(-add)
+    return Q_new
+
+def mean_field_update_assemble_surfaces(number_of_surfaces, sigma, weight, matrix):
+
+    similarities = layers.Input(shape=(number_of_surfaces, number_of_surfaces))
+    unary_potentials = layers.Input(shape=(number_of_surfaces, number_of_surfaces))
+    Q = layers.Input(shape=(number_of_surfaces, number_of_surfaces))
+
+    sigma = Variable(sigma)(similarities)
+    weight = Variable(weight)(similarities)
+
+    similarities = tf.multiply(tf.square(similarities), tf.broadcast_to(sigma, tf.shape(similarities)))
+
+    for _ in range(5):
+        Q = update_step(Q, similarities, matrix, weight, unary_potentials)
+
+    output = Q
+    model = Model(inputs=[similarities, unary_potentials, Q], outputs=output)
+    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
+                  run_eagerly=False)
+    model.summary()
+    return model
+
+
 def custom_loss(y_actual, y_predicted):
     only_wrong_ones = tf.multiply(y_actual, y_predicted)
     error = tf.reduce_sum(only_wrong_ones, axis=-1)

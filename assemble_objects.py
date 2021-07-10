@@ -68,12 +68,16 @@ def determine_centroid(depth_image, positions):
     return centroids
 
 def determine_convexity(normals, centroids, neighbors, number_of_surfaces):
-    convexity = -np.ones((number_of_surfaces, number_of_surfaces))
+    convexity = np.zeros((number_of_surfaces, number_of_surfaces))
     for i in range(number_of_surfaces):
-        for j in range(number_of_surfaces):
-            if convexity[i][j] >= 0:
-                continue
-            if i == j or j not in neighbors[i]:
+        for j in range(i+1, number_of_surfaces):
+            if j not in neighbors[i]:
                 convexity[i][j] = 0
                 continue
             diff = centroids[i] - centroids[j]
+            v1 = np.dot(diff, normals[i])
+            v2 = np.dot(diff, normals[j])
+            if v1 - v2 > 0:
+                convexity[i][j] = 1
+                convexity[j][i] = 1
+
