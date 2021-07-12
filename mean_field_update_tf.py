@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
 
-variable_names = ["w_1", "w_2", "w_3", "w_4", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_3_1", "theta_3_2", "theta_3_3", "theta_4_1", "theta_4_2", "theta_4_3", "weight"]
+variable_names = ["w_1", "w_3", "w_4", "theta_1_1", "theta_1_2", "theta_3_1", "theta_3_2", "theta_3_3", "theta_4_1", "theta_4_2", "theta_4_3", "weight"]
 
 def print_parameters(model):
     for name in variable_names:
@@ -16,7 +16,7 @@ def save_parameters(model, index):
     np.save(f"parameters/{index}.npy", array)
 
 def load_parameters(index):
-    return list(np.reshape(np.load(f"parameters/{index}.npy"), (15, 1, 1)))
+    return list(np.reshape(np.load(f"parameters/{index}.npy"), (12, 1, 1)))
 
 class Variable(layers.Layer):
     def __init__(self, initial_value, **kwargs):
@@ -158,25 +158,21 @@ def mean_field_update_model_learned(number_of_pixels, number_of_surfaces, Q, fea
     model.summary()
     return model
 
-def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, features_1, features_2, features_3, features_4, matrix,
-                            w_1, w_2, w_3, w_4, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_3_1, theta_3_2, theta_3_3, theta_4_1, theta_4_2, theta_4_3, weight, batch_size):
+def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, features_1, features_3, features_4, matrix,
+                            w_1, w_3, w_4, theta_1_1, theta_1_2, theta_3_1, theta_3_2, theta_3_3, theta_4_1, theta_4_2, theta_4_3, weight, batch_size):
     Q = tf.tile(tf.expand_dims(tf.constant(Q, dtype=tf.float32), axis=0), [batch_size, 1, 1])
     matrix =  tf.tile(tf.expand_dims(tf.constant(matrix, dtype=tf.float32), axis=0), [batch_size, 1, 1])
 
     features_1 = tf.tile(tf.expand_dims(tf.constant(features_1, dtype=tf.float32), axis=0), [batch_size, 1, 1])
-    features_2 = tf.tile(tf.expand_dims(tf.constant(features_2, dtype=tf.float32), axis=0), [batch_size, 1, 1])
     features_3 = tf.tile(tf.expand_dims(tf.constant(features_3, dtype=tf.float32), axis=0), [batch_size, 1, 1])
     features_4 = tf.tile(tf.expand_dims(tf.constant(features_4, dtype=tf.float32), axis=0), [batch_size, 1, 1])
 
     feature_1 = layers.Input(shape=(3,), batch_size=batch_size, dtype=tf.float32)
-    feature_2 = layers.Input(shape=(5,), batch_size=batch_size, dtype=tf.float32)
     feature_3 = layers.Input(shape=(6,), batch_size=batch_size, dtype=tf.float32)
     feature_4 = layers.Input(shape=(5,), batch_size=batch_size, dtype=tf.float32)
 
     theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(feature_1), repeats=[2], axis=-1)
     theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(feature_1), repeats=[1], axis=-1)
-    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_2_1")(feature_1), repeats=[2], axis=-1)
-    theta_2_2 = tf.repeat(Variable(theta_2_2, name="theta_2_2")(feature_1), repeats=[3], axis=-1)
     theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_3_1")(feature_1), repeats=[2], axis=-1)
     theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_3_2")(feature_1), repeats=[1], axis=-1)
     theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_3_3")(feature_1), repeats=[3], axis=-1)
@@ -185,7 +181,6 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     theta_4_3 = tf.repeat(Variable(theta_4_3, name="theta_4_3")(feature_1), repeats=[2], axis=-1)
 
     theta_1 = tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1")
-    theta_2 = tf.concat([theta_2_1, theta_2_2], axis=-1, name="Theta_2")
     theta_3 = tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3")
     theta_4 = tf.concat([theta_4_1, theta_4_2, theta_4_3], axis=-1, name="Theta_4")
 
@@ -194,10 +189,6 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     feature_1_extended = tf.tile(tf.expand_dims(feature_1, axis=1), np.asarray([1, number_of_pixels, 1]))
     differences_1 = tf.subtract(feature_1_extended, features_1)
     similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_1), tf.broadcast_to(theta_1, tf.shape(differences_1))), axis=-1))
-
-    feature_2_extended = tf.tile(tf.expand_dims(feature_2, axis=1), np.asarray([1, number_of_pixels, 1]))
-    differences_2 = tf.subtract(feature_2_extended, features_2)
-    similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_2), tf.broadcast_to(theta_2, tf.shape(differences_2))), axis=-1))
 
     feature_3_extended = tf.tile(tf.expand_dims(feature_3, axis=1), np.asarray([1, number_of_pixels, 1]))
     differences_3 = tf.subtract(feature_3_extended, features_3)
@@ -208,7 +199,6 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     similarities_4 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_4), tf.broadcast_to(theta_4, tf.shape(differences_4))), axis=-1))
 
     similarity_sum = layers.Add()([layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
-                                 layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
                                  layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3]),
                                  layers.Multiply()([Variable2(w_4, name="w_4")(similarities_4), similarities_4])])
 
@@ -217,12 +207,12 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
 
     compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=1), [1, number_of_surfaces, 1])), axis=-1)
     #p = Print_Tensor(dtype=tf.float32)(compatibility_values)
-    add = layers.Add(activity_regularizer=regularizers.l2(0.001))([unary_potentials, compatibility_values])
+    add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, compatibility_values])
 
     #o = Print_Tensor()(layers.Softmax()(-add))
     output = layers.Softmax()(-add)
 
-    model = Model(inputs=[feature_1, feature_2, feature_3, feature_4, unary_potentials], outputs=output)
+    model = Model(inputs=[feature_1, feature_3, feature_4, unary_potentials], outputs=output)
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
                   run_eagerly=False)
     model.summary()

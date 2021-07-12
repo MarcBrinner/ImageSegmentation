@@ -58,21 +58,24 @@ def find_annotation_correspondence(surfaces, annotation):
     return mapping
 
 def get_initial_guess_parameters():
-    return list(np.reshape([1.0, 1.0, 1.0, 1.0, 1/80, 10.0, 1/100, 1/200, 1/100, 10.0, 1/200, 1/100, 10.0, 11.0, 0.01], (15, 1, 1)))
+    return list(np.reshape([0.8, 0.8, 1.5, 1/80, 2500.0, 1/100, 2500.0, 1/200, 1/100, 2500.0, 20.0, 0.01], (12, 1, 1)))
 
-def calculate_labels(surfaces, annotation, correspondence, number_of_surfaces):
+def calculate_labels(surfaces, annotation, correspondence, number_of_surfaces, depth_image, number_to_fill):
     labels = []
     height, width = np.shape(surfaces)
     for y in range(height):
         for x in range(width):
-            label = np.ones(number_of_surfaces)
-            for l in correspondence[annotation[y][x]]:
-                label[l] = 0
-            labels.append(label)
+            if depth_image[y][x] > 0.0001:
+                label = np.ones(number_of_surfaces)
+                for l in correspondence[annotation[y][x]]:
+                    label[l] = 0
+                labels.append(label)
+    for i in range(number_to_fill):
+        labels.append(np.zeros(number_of_surfaces))
     return np.asarray(labels, dtype="float64")
 
 
-def train_model_on_images(image_indices, load_index=-1, save_index=1, batch_size=16, epochs=1):
+def train_model_on_images(image_indices, load_index=-1, save_index=2, batch_size=16, epochs=1):
     for epoch in range(epochs):
         for image_index in image_indices:
             print(f"Training on image {image_index}")
@@ -80,10 +83,12 @@ def train_model_on_images(image_indices, load_index=-1, save_index=1, batch_size
             surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
             correspondence = find_annotation_correspondence(surfaces, annotation)
             log_depth = convert_depth_image(depth_image)
-            features, features_w_0 = extract_features(log_depth, rgb_image)
+            features, number_to_fill, indices = extract_features(log_depth, rgb_image, batch_size)
+            features = [np.asarray(f) for f in features]
             number_of_surfaces = int(np.max(surfaces)+1)
-            unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces, depth_image)
+            unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces, depth_image, number_to_fill)
             initial_Q = np.asarray(initial_Q)
+            unary_potentials = np.asarray(unary_potentials)
             if load_index >= 0:
                 parameters = load_parameters(load_index)
             else:
@@ -93,11 +98,12 @@ def train_model_on_images(image_indices, load_index=-1, save_index=1, batch_size
             print(parameters)
 
             matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
-            MFI_NN = mean_field_update_model_learned_2(np.shape(initial_Q)[0], number_of_surfaces, initial_Q, *[np.asarray(f) for f in features_w_0],
+            MFI_NN = mean_field_update_model_learned_2(np.shape(initial_Q)[0], number_of_surfaces, initial_Q, *features,
                                              matrix, *parameters, batch_size)
 
             print_parameters(MFI_NN)
-            Y = calculate_labels(surfaces, annotation, correspondence, number_of_surfaces)
+            Y = calculate_labels(surfaces, annotation, correspondence, number_of_surfaces, log_depth, number_to_fill)
+
             # test_index = 371 * 640 + 524
             # out = MFI_NN.fit([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],
             #                      features[2][test_index:test_index+batch_size], features[3][test_index:test_index+batch_size],
@@ -108,23 +114,25 @@ def train_model_on_images(image_indices, load_index=-1, save_index=1, batch_size
 
             save_parameters(MFI_NN, save_index)
 
-def test_model_on_image(image_index, load_index=1, load_iteration=0, batch_size=16):
+def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=16):
     depth_image, rgb_image, annotation = load_image(image_index)
     surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
     log_depth = convert_depth_image(depth_image)
-    features, features_w_0 = extract_features(log_depth, rgb_image)
+    features, number_to_fill, indices = extract_features(log_depth, rgb_image, batch_size)
+    features = [np.asarray(f) for f in features]
     number_of_surfaces = int(np.max(surfaces) + 1)
-    unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces, depth_image)
+    unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces, depth_image, number_to_fill)
     initial_Q = np.asarray(initial_Q)
+    unary_potentials = np.asarray(unary_potentials)
     if load_iteration >= 1:
         initial_Q = np.load(f"it_{load_iteration}.npy")
 
     parameters = load_parameters(load_index)
 
     matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
-    MFI_NN = mean_field_update_model_learned_2(np.shape(initial_Q)[0], number_of_surfaces, initial_Q, *[np.asarray(f) for f in features_w_0],
+    MFI_NN = mean_field_update_model_learned_2(np.shape(initial_Q)[0], number_of_surfaces, initial_Q, *features,
                                              matrix, *parameters, batch_size)
-
+    print_parameters(MFI_NN)
 
     # test_index = 371 * 640 + 524
     # out = MFI_NN.predict([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],
@@ -133,7 +141,10 @@ def test_model_on_image(image_index, load_index=1, load_iteration=0, batch_size=
     # print(out)
 
     Q = MFI_NN.predict([*features, unary_potentials], batch_size=batch_size)
-    plot_surfaces(Q)
+    Q_complete = np.zeros((480*640, number_of_surfaces))
+    for i in range(len(indices)):
+        Q_complete[indices[i]] = Q[i]
+    plot_surfaces(Q_complete)
 
     np.save(f"it_{load_iteration+1}.npy", Q)
 
@@ -243,56 +254,60 @@ def remove_small_patches(index_image, surface_image, segment_count):
             index_image[y][x] = relabeling[index_image[y][x]]
 
 @njit()
-def get_unary_potentials_and_initial_probabilities(surface_image, number_of_labels, depth_image):
+def get_unary_potentials_and_initial_probabilities(surface_image, number_of_labels, depth_image, number_to_fill):
     height, width = np.shape(surface_image)
-    unary_potentials = np.zeros((height * width, number_of_labels))
+    unary_potentials = []
     initial_probabilities = []
     index = 0
     for y in range(height):
         for x in range(width):
-            if surface_image[y][x] == 0:
-                unary_potentials[index] = np.ones(number_of_labels)/(number_of_labels-1)
-                unary_potentials[index][0] = 10
-                if depth_image[y][x] > 0.0001:
-                    prob = unary_potentials[index].copy()
+            if depth_image[y][x] > 0.0001:
+                if surface_image[y][x] == 0:
+                    potential = np.ones(number_of_labels)/(number_of_labels-1)
+                    potential[0] = 10
+                    unary_potentials.append(potential)
+                    prob = potential.copy()
                     prob[0] = 0
                     initial_probabilities.append(prob)
-            else:
-                unary_potentials[index] = np.ones(number_of_labels)*1
-                unary_potentials[index][surface_image[y][x]] = 0
-                unary_potentials[index][0] = 10
-                if depth_image[y][x] > 0.0001:
+                else:
+                    potential = np.ones(number_of_labels)
+                    potential[surface_image[y][x]] = 0
+                    potential[0] = 10
+                    unary_potentials.append(potential)
                     prob = np.ones(number_of_labels)/(number_of_labels-2)*0.1
                     prob[surface_image[y][x]] = 0.9
                     prob[0] = 0
                     initial_probabilities.append(prob)
             index += 1
+    for i in range(number_to_fill):
+        unary_potentials.append(np.zeros(number_of_labels))
+        initial_probabilities.append(np.zeros(number_of_labels))
     return unary_potentials, initial_probabilities
 
 @njit()
-def extract_features(depth_image, lab_image):
+def extract_features(depth_image, lab_image, desired_batch_size):
     angle_image = calculate_normals_as_angles_final(depth_image)
     height, width = np.shape(depth_image)
-    features_1 = np.zeros((height * width, 3))
-    features_2 = np.zeros((height * width, 5))
-    features_3 = np.zeros((height * width, 6))
-    features_4 = np.zeros((height * width, 5))
-    features_1_w_0 = []
-    features_2_w_0 = []
-    features_3_w_0 = []
-    features_4_w_0 = []
+    features_1 = []
+    features_3 = []
+    features_4 = []
+    indices = []
+    index = 0
     for y in range(height):
         for x in range(width):
-            features_1[y*width + x] = np.asarray([y, x, depth_image[y][x]])
-            features_2[y*width + x] = np.asarray([y, x, lab_image[y][x][0], lab_image[y][x][1], lab_image[y][x][2]])
-            features_3[y*width + x] = np.asarray([y, x, depth_image[y][x], lab_image[y][x][0], lab_image[y][x][1], lab_image[y][x][2]])
-            features_4[y*width + x] = np.asarray([y, x, depth_image[y][x], angle_image[y][x][0], angle_image[y][x][1]])
             if depth_image[y][x] > 0.0001:
-                features_1_w_0.append(features_1[y*width + x])
-                features_2_w_0.append(features_2[y*width + x])
-                features_3_w_0.append(features_3[y*width + x])
-                features_4_w_0.append(features_4[y*width + x])
-    return (features_1, features_2, features_3, features_4), (features_1_w_0, features_2_w_0, features_3_w_0, features_4_w_0)
+                indices.append(index)
+                features_1.append(np.asarray([y, x, depth_image[y][x]]))
+                features_3.append(np.asarray([y, x, depth_image[y][x], lab_image[y][x][0], lab_image[y][x][1], lab_image[y][x][2]]))
+                features_4.append(np.asarray([y, x, depth_image[y][x], angle_image[y][x][0], angle_image[y][x][1]]))
+            index += 1
+    num_batches = len(indices)/desired_batch_size
+    number_to_fill = int((int(np.ceil(num_batches)) - num_batches) * desired_batch_size)
+    for i in range(number_to_fill):
+        features_1.append(np.asarray([0.0, 0.0, 0.0]))
+        features_3.append(np.asarray([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+        features_4.append(np.asarray([0.0, 0.0, 0.0, 0.0, 0.0]))
+    return (features_1, features_3, features_4), number_to_fill, indices
 
 def mean_field_update_NN(Q, unary_potentials, features, theta_1, theta_2, theta_3, theta_4, theta_5, w_1, w_2, w_3, w_4, w_5, weight, number_of_labels, batch_size = 32):
     features_1, features_2, features_3, features_4, features_5 = features
@@ -311,7 +326,8 @@ def mean_field_update_NN(Q, unary_potentials, features, theta_1, theta_2, theta_
 
 def plot_surfaces(Q):
     image = np.argmax(Q, axis=-1)
-    plt.imshow(np.reshape(image, (480, 640)), cmap='nipy_spectral')
+    image = np.reshape(image, (480, 640))
+    plt.imshow(image, cmap='nipy_spectral')
     plt.show()
 
 def plot_surface_image(surfaces):
