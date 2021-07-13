@@ -1,4 +1,6 @@
 import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, Model
 from scipy.spatial.transform import Rotation
 from numba import njit
 
@@ -44,7 +46,7 @@ def angles_to_normals(angles):
     return normals
 
 @njit()
-def calc_average_normal_and_position(angle_image, index_image, number_of_surfaces):
+def calc_average_normal_and_position_and_counts(angle_image, index_image, number_of_surfaces):
     height, width = np.shape(index_image)
     counter = np.zeros(number_of_surfaces)
     angles = np.zeros((number_of_surfaces, 2))
@@ -57,7 +59,7 @@ def calc_average_normal_and_position(angle_image, index_image, number_of_surface
             positions[surface] += np.asarray([x, y])
     angles = angles/counter
     positions = positions/counter
-    return angles, positions
+    return angles, positions, counter
 
 def determine_centroid(depth_image, positions):
     centroids = np.zeros((len(positions), 3))
@@ -81,3 +83,28 @@ def determine_convexity(normals, centroids, neighbors, number_of_surfaces):
                 convexity[i][j] = 1
                 convexity[j][i] = 1
 
+def histogram_calculations(lab_image, surfaces, number_of_surfaces, pixels_per_surface):
+    histograms = np.zeros((255, 255, number_of_surfaces))
+    height, width = np.shape(surfaces)
+    for y in range(height):
+        for x in range(width):
+            s = surfaces[y][x]
+            if s < 0.0001:
+                continue
+            l, a, b = lab_image[y][x]
+            histograms[a][b][s] += 100/pixels_per_surface[s]
+    return histograms
+
+def determine_color_similarities(lab_image, surfaces, number_of_surfaces, pixels_per_surface):
+    histograms = histogram_calculations(lab_image, surfaces, number_of_surfaces, pixels_per_surface)
+
+    input = layers.Input(shape=(255, 255, number_of_surfaces))
+    pool = layers.AveragePooling2D(pool_size=(5, 5), strides=(2, 2), batch_size=1)(input)
+    pool = tf.reshape(pool, (1, number_of_surfaces, 255, 255))
+    mult_1 = tf.repeat(tf.expand_dims(pool, axis=1), repeats=[number_of_surfaces], axis=2)
+    mult_2 = tf.repeat(tf.expand_dims(pool, axis=2), repeats=[number_of_surfaces], axis=2)
+    similarities = tf.reduce_sum(tf.reduce_sum(tf.multiply(mult_1, mult_2), axis=-1), axis=-1)
+    model = Model(inputs=[input], outputs=similarities)
+    model.summary()
+    similarities = model.predict(np.asarray([histograms]))
+    return similarities
