@@ -146,7 +146,7 @@ def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=
         Q_complete[indices[i]] = Q[i]
     plot_surfaces(Q_complete)
 
-    np.save(f"it_{load_iteration+1}.npy", Q)
+    np.save(f"it_{load_iteration+1}.npy", Q_complete)
 
 
 @njit()

@@ -1,8 +1,12 @@
 import numpy as np
 import tensorflow as tf
+import calculate_normals
+from image_operations import rgb_to_Lab
 from tensorflow.keras import layers, Model
 from scipy.spatial.transform import Rotation
 from numba import njit
+from load_images import *
+from find_planes_MS import plot_surfaces
 
 @njit()
 def determine_neighbors(index_image, segment_count):
@@ -48,13 +52,13 @@ def angles_to_normals(angles):
 @njit()
 def calc_average_normal_and_position_and_counts(angle_image, index_image, number_of_surfaces):
     height, width = np.shape(index_image)
-    counter = np.zeros(number_of_surfaces)
+    counter = np.zeros((number_of_surfaces, 1))
     angles = np.zeros((number_of_surfaces, 2))
     positions = np.zeros((number_of_surfaces, 2))
     for y in range(height):
         for x in range(width):
             surface = index_image[y][x]
-            counter[surface] += 1
+            counter[surface][0] += 1
             angles[surface] += angle_image[y][x]
             positions[surface] += np.asarray([x, y])
     angles = angles/counter
@@ -84,7 +88,7 @@ def determine_convexity(normals, centroids, neighbors, number_of_surfaces):
                 convexity[j][i] = 1
 
 def histogram_calculations(lab_image, surfaces, number_of_surfaces, pixels_per_surface):
-    histograms = np.zeros((255, 255, number_of_surfaces))
+    histograms = np.zeros((256, 256, number_of_surfaces))
     height, width = np.shape(surfaces)
     for y in range(height):
         for x in range(width):
@@ -92,19 +96,36 @@ def histogram_calculations(lab_image, surfaces, number_of_surfaces, pixels_per_s
             if s < 0.0001:
                 continue
             l, a, b = lab_image[y][x]
-            histograms[a][b][s] += 100/pixels_per_surface[s]
+            histograms[a][b][s] += 1/pixels_per_surface[s]
     return histograms
 
 def determine_color_similarities(lab_image, surfaces, number_of_surfaces, pixels_per_surface):
     histograms = histogram_calculations(lab_image, surfaces, number_of_surfaces, pixels_per_surface)
 
-    input = layers.Input(shape=(255, 255, number_of_surfaces))
+    input = layers.Input(shape=(256, 256, number_of_surfaces))
     pool = layers.AveragePooling2D(pool_size=(5, 5), strides=(2, 2), batch_size=1)(input)
-    pool = tf.reshape(pool, (1, number_of_surfaces, 255, 255))
-    mult_1 = tf.repeat(tf.expand_dims(pool, axis=1), repeats=[number_of_surfaces], axis=2)
+    pool = tf.reshape(pool, (1, number_of_surfaces, 126, 126))
+    mult_1 = tf.repeat(tf.expand_dims(pool, axis=1), repeats=[number_of_surfaces], axis=1)
     mult_2 = tf.repeat(tf.expand_dims(pool, axis=2), repeats=[number_of_surfaces], axis=2)
     similarities = tf.reduce_sum(tf.reduce_sum(tf.multiply(mult_1, mult_2), axis=-1), axis=-1)
     model = Model(inputs=[input], outputs=similarities)
     model.summary()
     similarities = model.predict(np.asarray([histograms]))
     return similarities
+
+def main():
+    depth_image, rgb_image, annotation = load_image(110)
+    surfaces = np.load("it_1.npy")
+
+    lab_image = rgb_to_Lab(rgb_image)
+    number_of_surfaces = np.max(surfaces) + 1
+    angle_image = calculate_normals.calculate_normals_as_angles_final(depth_image)
+    print("Normals calculated.")
+    angles, positions, counter = calc_average_normal_and_position_and_counts(angle_image, surfaces, number_of_surfaces)
+    print("Centroids found.")
+    similarities = determine_color_similarities(lab_image, surfaces, number_of_surfaces, counter)
+    print("Similarities calculated.")
+    quit()
+
+if __name__ == '__main__':
+    main()
