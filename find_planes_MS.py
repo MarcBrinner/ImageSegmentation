@@ -1,6 +1,7 @@
 import seaborn as sns
 import matplotlib.pyplot as plt
 import time
+import find_edges
 import multiprocessing
 from mean_field_update_tf import *
 from calculate_normals import *
@@ -8,7 +9,7 @@ from plot_image import *
 from collections import Counter
 from numba import njit, prange
 from load_images import *
-from image_operations import convert_depth_image, rgb_to_Lab
+from image_operations import convert_depth_image, rgb_to_Lab, calculate_curvature_scores_2
 from sklearn.cluster import MeanShift
 from sklearn.cluster import KMeans
 from sklearn.cluster import DBSCAN
@@ -80,9 +81,9 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, batch_size
         for image_index in image_indices:
             print(f"Training on image {image_index}")
             depth_image, rgb_image, annotation = load_image(image_index)
-            surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
-            correspondence = find_annotation_correspondence(surfaces, annotation)
             log_depth = convert_depth_image(depth_image)
+            surfaces = find_smooth_surfaces_with_curvature_scores(depth_image, log_depth)
+            correspondence = find_annotation_correspondence(surfaces, annotation)
             features, number_to_fill, indices = extract_features(log_depth, rgb_image, batch_size)
             features = [np.asarray(f) for f in features]
             number_of_surfaces = int(np.max(surfaces)+1)
@@ -116,8 +117,8 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, batch_size
 
 def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=16):
     depth_image, rgb_image, annotation = load_image(image_index)
-    surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
     log_depth = convert_depth_image(depth_image)
+    surfaces = find_smooth_surfaces_new(depth_image, log_depth)
     features, number_to_fill, indices = extract_features(log_depth, rgb_image, batch_size)
     features = [np.asarray(f) for f in features]
     number_of_surfaces = int(np.max(surfaces) + 1)
@@ -163,30 +164,32 @@ def do_iteration_2(image, number, size):
                 new_image[i][j] = 1.0
     return new_image
 
-
 @njit()
-def smooth_surface_calculations(depth_image):
+def smooth_surface_calculations(depth_image, log_depth_image):
     height, width = np.shape(depth_image)
     plane_image = np.zeros((height, width))
     factor_x = math.tan(viewing_angle_x / 2) * 2 / width
     factor_y = math.tan(viewing_angle_y / 2) * 2 / height
     threshold = 0.007003343675404672
-    size = 4
+    size = 3
     positions = [[0, size], [0, 2*size], [size, 2*size], [2*size, 2*size], [2*size, size], [2*size, 0], [size, 0], [0, 0]]
     for y in prange(height):
         #print(y)
+        #y = 253
         for x in range(width):
+            #x = 185
             d = depth_image[y][x]
             if d < 0.0001:
                 continue
             depth_factor_x = factor_x * d
             depth_factor_y = factor_y * d
-            curvature_scores = calculate_curvature_scores(depth_image, size, y, x, np.asarray([depth_factor_x, depth_factor_y]), d, width, height)
+            curvature_scores = calculate_curvature_scores_2(depth_image, log_depth_image, size, y, x, width, height)
 
-            for i in range(len(positions)):
-                if np.max(np.abs(np.asarray([curvature_scores[p[0]][p[1]] for p in [positions[i], positions[i-1], positions[i-2], positions[i-3]]]))) < 0 or \
-                    np.sum(curvature_scores) < threshold*32:
-                    plane_image[y][x] = 1
+            plane_image[y][x] = np.max(curvature_scores)
+            # for i in range(len(positions)):
+            #     if np.max(np.abs(np.asarray([curvature_scores[p[0]][p[1]] for p in [positions[i], positions[i-1], positions[i-2], positions[i-3]]]))) < 0 or \
+            #         np.sum(curvature_scores) < threshold*16:
+            #         plane_image[y][x] = 1
     return plane_image
 
 @njit()
@@ -335,20 +338,46 @@ def plot_surface_image(surfaces):
     plt.show()
     return
 
-def find_smooth_surfaces_with_curvature_scores(depth_image):
-    depth_image = gaussian_filter_with_depth_factor(depth_image, 4)
+
+def find_smooth_surfaces_with_curvature_scores(depth_image, log_depth_image):
+    #depth_image = gaussian_filter_with_depth_factor(depth_image, 4)
+    #plot_array_PLT(log_depth_image)
+    depth_image = gaussian_filter_with_log_depth_cutoff(depth_image, log_depth_image, 5, 3)
+    #depth_image = median_filter(depth_image, 5)
+    #plot_array_PLT(log_depth_image)
+    #quit()
+    #points = depth_image[103][347-16:347+16]
+    #plt.plot(points)
+    #plt.show()
+    #print(points)
+    #quit()
+    thr = 0.007003343675404672
     print("Filter applied.")
-    surfaces = smooth_surface_calculations(depth_image)
+    surfaces = smooth_surface_calculations(depth_image, log_depth_image)
+    plot_array_PLT(surfaces)
+    surfaces = gaussian_filter(surfaces, 2)
+    plot_array_PLT(surfaces)
+    s = surfaces.copy()
+    t = 0.0002
+    s[surfaces > t] = 1
+    s[surfaces <= t] = 0
+    plot_array_PLT(s)
     print("Surface patches found.")
     surfaces = do_iteration_2(surfaces, 11, 2)
-    surfaces = do_iteration_2(surfaces, 5, 1)
+    #surfaces = do_iteration_2(surfaces, 5, 1)
+    #surfaces = gaussian_filter(surfaces, 4)
+    depth_edges = find_edges.find_edges_from_depth_image(depth_image)
+    plot_array_PLT(depth_edges)
+    surfaces += depth_edges
+    surfaces[surfaces > 1] = 1
+    plot_array_PLT(surfaces<thr*32)
     print("Smoothing iterations done.")
     #indexed_surfaces = find_consecutive_patches(surfaces)
     indexed_surfaces, segment_count = measure.label(surfaces, background=-1, return_num=True)
     remove_small_patches(indexed_surfaces, surfaces, segment_count)
     print("Image cleaning done.")
     #colored_image = color_patches(indexed_surfaces)
-    #plot_surface_image(indexed_surfaces)
+    plot_surface_image(indexed_surfaces)
     return indexed_surfaces
 
 def assign_all_pixels_to_surfaces(surface_image, depth_image, rgb_image, load_iteration=1):
@@ -401,7 +430,7 @@ def check_image():
     quit()
 
 if __name__ == '__main__':
-    train_model_on_images(train_indices)
+    #train_model_on_images(train_indices)
     test_model_on_image(test_indices[0])
     #check_image()
     #test_model_on_image(110)

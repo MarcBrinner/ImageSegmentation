@@ -7,6 +7,9 @@ from numba import njit
 def median_filter(image, size):
     return scipy.ndimage.filters.median_filter(image, size)
 
+def gaussian_filter(image, sigma):
+    return scipy.ndimage.filters.gaussian_filter(image, sigma)
+
 @njit()
 def gaussian_filter_with_norm_check(image, size, sigma):
     height, width, dim = np.shape(image)
@@ -43,7 +46,7 @@ def gaussian_filter_with_depth_check(image, size, sigma, depth_image, none_value
             sum = np.zeros(dim)
             for k in range(max(0, i - size), min(height - 1, i + size + 1)):
                 for l in range(max(0, j - size), min(width - 1, j + size + 1)):
-                    if depth_image[i][j] > 0.0001:
+                    if depth_image[k][l] > 0.0001:
                         weight = np.exp(-sigma * ((i - k) ** 2 + (j - l) ** 2))
                         weights += weight
                         sum += weight * image[k][l]
@@ -53,6 +56,7 @@ def gaussian_filter_with_depth_check(image, size, sigma, depth_image, none_value
             else:
                 new_image[i][j] = none_value.copy()
     return new_image
+
 @njit()
 def uniform_filter_without_zero(image, size):
     shape = np.shape(image)
@@ -103,4 +107,30 @@ def gaussian_filter_with_depth_factor(depth_image, size, sigma=None):
                 sum += d * weight
                 weights = np.sum(np.asarray(weights))
                 new_image[i][j] = sum/weights
+    return new_image
+
+@njit()
+def gaussian_filter_with_log_depth_cutoff(depth_image, log_depth, size, sigma):
+    height, width = np.shape(depth_image)
+    new_image = np.zeros(np.shape(depth_image))
+    sigma = 1 / sigma ** 2
+    for i in range(height):
+        for j in range(width):
+            if depth_image[i][j] < 0.0001:
+                new_image[i][j] = 0
+                continue
+            weights = 0
+            sum = 0
+            current_log_depth = log_depth[i][j]
+            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
+                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+                    if depth_image[k][l] > 0.0001 and abs(log_depth[k][l] - current_log_depth) < 0.02:
+                        weight = np.exp(-sigma * ((i - k) ** 2 + (j - l) ** 2))
+                        weights += weight
+                        sum += weight * depth_image[k][l]
+            if weights > 0:
+                sum = sum / weights
+                new_image[i][j] = sum
+            else:
+                new_image[i][j] = 0
     return new_image

@@ -18,7 +18,7 @@ def find_edges_from_depth_image(image):
             alpha = 6
             if np.max(np.abs(np.asarray([image[i-1][j], image[i+1][j]]) - d)) > depth_factor_y*alpha or\
                 np.max(np.abs(np.asarray([image[i][j+1], image[i][j-1]]) - d)) > depth_factor_x * alpha:
-                edge_image[i][j] = 255
+                edge_image[i][j] = 1
     return edge_image
 
 @njit
