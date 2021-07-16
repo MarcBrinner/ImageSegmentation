@@ -218,7 +218,7 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     model.summary()
     return model
 
-def calculate_similarities(features, theta, y, x):
+def calculate_similarities(features, theta, y, x, height, width):
     y = -y
     x = -x
     # if y < 0:
@@ -236,13 +236,13 @@ def calculate_similarities(features, theta, y, x):
     #         pad = tf.constant([[0, 0], [kernel_size - y, y], [kernel_size - x, x], [0, 0]])
     #         pad2 = tf.constant([[0, 0], [kernel_size, 0], [kernel_size, 0], [0, 0]])
 
-    f1 = features[:, abs(min(y, 0)):-max(0, y), abs(min(x, 0)) - max(0, x)]
+    f1 = features[:, abs(min(y, 0)):height-max(0, y), abs(min(x, 0)): width - max(0, x), :]
     pad = tf.constant([[0, 0], [max(y, 0), abs(min(y, 0))], [max(x, 0), abs(min(x, 0))], [0, 0]])
-    f1 = tf.pad(f1, pad, 0)
+    f1 = tf.pad(f1, pad)
 
     sub = tf.subtract(f1, features)
     squared = tf.square(sub)
-    similarity = tf.exp(-tf.reduce_sum(tf.multiply(tf.broadcast_to(theta, squared), squared), axis=-1))
+    similarity = tf.exp(-tf.reduce_sum(tf.multiply(tf.broadcast_to(theta, tf.shape(squared)), squared), axis=-1))
     return similarity
 
 
@@ -258,35 +258,36 @@ def mean_field_convolutional(number_of_surfaces, matrix, w_1, w_2, w_3, theta_1_
 
     theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(features_1), repeats=[2], axis=-1)
     theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(features_1), repeats=[1], axis=-1)
-    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_3_1")(features_1), repeats=[2], axis=-1)
-    theta_2_2 = tf.repeat(Variable(theta_2_2, name="theta_3_2")(features_1), repeats=[1], axis=-1)
-    theta_2_3 = tf.repeat(Variable(theta_2_3, name="theta_3_3")(features_1), repeats=[3], axis=-1)
-    theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_4_1")(features_1), repeats=[2], axis=-1)
-    theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_4_2")(features_1), repeats=[1], axis=-1)
-    theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_4_3")(features_1), repeats=[2], axis=-1)
+    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_2_1")(features_1), repeats=[2], axis=-1)
+    theta_2_2 = tf.repeat(Variable(theta_2_2, name="theta_2_2")(features_1), repeats=[1], axis=-1)
+    theta_2_3 = tf.repeat(Variable(theta_2_3, name="theta_2_3")(features_1), repeats=[3], axis=-1)
+    theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_3_1")(features_1), repeats=[2], axis=-1)
+    theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_3_2")(features_1), repeats=[1], axis=-1)
+    theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_3_3")(features_1), repeats=[2], axis=-1)
 
     theta_1 = tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1")
     theta_2 = tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2")
     theta_3 = tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3")
 
-    unary_potentials = layers.Input(shape=(height, width, number_of_surfaces), batch_size=batch_size, dtype=tf.float32)
+    unary_potentials = layers.Input(shape=(height, width, number_of_surfaces), batch_size=1, dtype=tf.float32)
 
     messages = tf.zeros((1, height, width, number_of_surfaces))
 
-    shape_var = tf.reduce_sum(messages, axis=-1)
-    w_1 = Variable2(w_1, name="w_1")(shape_var)
-    w_2 = Variable2(w_2, name="w_2")(shape_var)
-    w_3 = Variable2(w_3, name="w_3")(shape_var)
+    w_1 = Variable2(w_1, name="w_1")
+    w_2 = Variable2(w_2, name="w_2")
+    w_3 = Variable2(w_3, name="w_3")
 
     for y in range(-kernel_size, kernel_size+1):
+        print(f"y: {y}")
         for x in range(-kernel_size, kernel_size+1):
-            similarities_1 = calculate_similarities(features_1, theta_1, y, x)
-            similarities_2 = calculate_similarities(features_2, theta_2, y, x)
-            similarities_3 = calculate_similarities(features_3, theta_3, y, x)
+            print(f"x: {x}")
+            similarities_1 = calculate_similarities(features_1, theta_1, y, x, height, width)
+            similarities_2 = calculate_similarities(features_2, theta_2, y, x, height, width)
+            similarities_3 = calculate_similarities(features_3, theta_3, y, x, height, width)
             similarity_sum = layers.Add()(
-                [layers.Multiply()([w_1, similarities_1]),
-                 layers.Multiply()([w_2, similarities_2]),
-                 layers.Multiply()([w_3, similarities_3])])
+                [layers.Multiply()([w_1(similarities_1), similarities_1]),
+                 layers.Multiply()([w_2(similarities_2), similarities_2]),
+                 layers.Multiply()([w_3(similarities_3), similarities_3])])
             new_messages = tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(Q)), Q)
             messages = messages + new_messages
 
@@ -297,7 +298,7 @@ def mean_field_convolutional(number_of_surfaces, matrix, w_1, w_2, w_3, theta_1_
     add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, compatibility_values])
     output = layers.Softmax()(-add)
 
-    model = Model(inputs=[features_1, features_2, features_3, unary_potentials], outputs=output)
+    model = Model(inputs=[features_1, features_2, features_3, unary_potentials, Q], outputs=output)
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
                   run_eagerly=False)
     model.summary()
@@ -345,11 +346,8 @@ def custom_loss(y_actual, y_predicted):
     return 100*error
 
 if __name__ == '__main__':
-    batch_size = 64
     number_of_surfaces = 33
-    n = 480*640
-    model = mean_field_update_model(n, number_of_surfaces, np.zeros((n, number_of_surfaces)), np.zeros((n, 2)), np.zeros((n, 3)),
-                                    np.zeros((n, 5)), np.zeros((n, 5)), np.zeros((number_of_surfaces, number_of_surfaces)), 1, 1, 1, 1,
-                                    np.ones((1, 2)), np.ones((1, 3)), np.ones((1, 5)), np.ones((1, 5)), 1/100000, batch_size)
-    output = model.predict([np.zeros((batch_size, 2)), np.zeros((batch_size, 3)), np.zeros((batch_size, 5)), np.zeros((batch_size, 5)), np.zeros((batch_size, number_of_surfaces))])
-    print(output)
+    height = 480
+    width = 640
+    model = mean_field_convolutional(number_of_surfaces, np.ones((number_of_surfaces, number_of_surfaces)),
+        *list(np.reshape([0.8, 0.8, 1.5, 1/80, 2500.0, 1/100, 2500.0, 1/200, 1/100, 2500.0, 20.0, 0.01], (12, 1, 1))), width, height, 2)

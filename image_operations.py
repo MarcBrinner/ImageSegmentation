@@ -32,7 +32,7 @@ def convert_depth_image(image):
     return new_image
 
 @njit()
-def calculate_curvature_scores(image, log_depth, neighborhood_value, i, j, factor_array, d, width, height):
+def calculate_curvature_scores(image, neighborhood_value, i, j, factor_array, d, width, height):
     curvature_scores = np.zeros((neighborhood_value * 2 + 1, neighborhood_value * 2 + 1))
     central_point = np.asarray([0, 0, d])
     directions = np.asarray([[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]])
@@ -40,50 +40,43 @@ def calculate_curvature_scores(image, log_depth, neighborhood_value, i, j, facto
         distance_prev_point = 0
         prev_point = None
         prev_score = 0
-        log_depth_prev_point = 0
         for k in range(1, neighborhood_value + 1):
             x_y_difference = direction * k
             current_x_y = x_y_difference * factor_array
-            current_indices = (i+x_y_difference[0], j+x_y_difference[1])
-            if current_indices[0] >= height or current_indices[0] < 0 or current_indices[1] >= width or current_indices[1] < 0:
+            if i + x_y_difference[0] >= height or i + x_y_difference[0] < 0 or j + x_y_difference[1] >= width or j + x_y_difference[1] < 0:
                 continue
-            current_point = np.asarray([current_x_y[0], current_x_y[1], image[current_indices[0]][current_indices[1]]])
+            current_point = np.asarray([current_x_y[0], current_x_y[1], image[i + x_y_difference[0]][j + x_y_difference[1]]])
             distance_current_point = np.sqrt(np.sum(np.square(current_point - central_point)))
-            log_depth_current_point = log_depth[current_indices[0]][current_indices[1]]
             if k == 1:
                 distance_prev_point = distance_current_point
                 prev_point = current_point
-                log_depth_prev_point = log_depth_current_point
                 continue
-            if abs(log_depth_prev_point-log_depth_current_point) > 0.01:
-                break
             distance_current_points = np.sqrt(np.sum(np.square(current_point - prev_point)))
             score = (distance_current_points + distance_prev_point) / distance_current_point - 1 + prev_score
             curvature_scores[neighborhood_value + x_y_difference[0]][neighborhood_value + x_y_difference[1]] = score
             prev_score = score
             distance_prev_point = distance_current_point
             prev_point = current_point
-            log_depth_prev_point = log_depth_current_point
 
-    # for direction in directions:
-    #     curvature_scores[neighborhood_value + direction[0]][neighborhood_value + direction[1]] =\
-    #         0.5 * curvature_scores[neighborhood_value + 2*direction[0]][neighborhood_value + 2*direction[1]]
-    #
-    # for level in range(2, neighborhood_value+1):
-    #     for k in range(8):
-    #         direction_1 = level * directions[k-1] + neighborhood_value
-    #         direction_2 = level * directions[k] + neighborhood_value
-    #         if direction_1[0] != direction_2[0]:
-    #             different_index = 0
-    #             values = [np.asarray([min(direction_1[0], direction_2[0]) + l, direction_1[1]]) for l in range(1, level)]
-    #         else:
-    #             different_index = 1
-    #             values = [np.asarray([direction_1[0], min(direction_1[1], direction_2[1]) + l]) for l in range(1, level)]
-    #         for value in values:
-    #             percentage = abs(direction_1[different_index] - value[different_index])/level
-    #             interpolated_value = percentage * curvature_scores[direction_2[0]][direction_2[1]] +\
-    #                                  (1-percentage) * curvature_scores[direction_1[0]][direction_1[1]]
-    #             curvature_scores[value[0]][value[1]] = interpolated_value
+    for direction in directions:
+        curvature_scores[neighborhood_value + direction[0]][neighborhood_value + direction[1]] =\
+            0.5 * curvature_scores[neighborhood_value + 2*direction[0]][neighborhood_value + 2*direction[1]]
+
+    for level in range(2, neighborhood_value+1):
+        for k in range(8):
+            direction_1 = level * directions[k-1] + neighborhood_value
+            direction_2 = level * directions[k] + neighborhood_value
+            if direction_1[0] != direction_2[0]:
+                different_index = 0
+                values = [np.asarray([min(direction_1[0], direction_2[0]) + l, direction_1[1]]) for l in range(1, level)]
+            else:
+                different_index = 1
+                values = [np.asarray([direction_1[0], min(direction_1[1], direction_2[1]) + l]) for l in range(1, level)]
+            for value in values:
+                percentage = abs(direction_1[different_index] - value[different_index])/level
+                interpolated_value = percentage * curvature_scores[direction_2[0]][direction_2[1]] +\
+                                     (1-percentage) * curvature_scores[direction_1[0]][direction_1[1]]
+                curvature_scores[value[0]][value[1]] = interpolated_value
     return curvature_scores
 
 @njit()

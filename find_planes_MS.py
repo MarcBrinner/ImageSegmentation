@@ -82,7 +82,7 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, batch_size
             print(f"Training on image {image_index}")
             depth_image, rgb_image, annotation = load_image(image_index)
             log_depth = convert_depth_image(depth_image)
-            surfaces = find_smooth_surfaces_with_curvature_scores(depth_image, log_depth)
+            surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
             correspondence = find_annotation_correspondence(surfaces, annotation)
             features, number_to_fill, indices = extract_features(log_depth, rgb_image, batch_size)
             features = [np.asarray(f) for f in features]
@@ -118,7 +118,7 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, batch_size
 def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=16):
     depth_image, rgb_image, annotation = load_image(image_index)
     log_depth = convert_depth_image(depth_image)
-    surfaces = find_smooth_surfaces_new(depth_image, log_depth)
+    surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
     features, number_to_fill, indices = extract_features(log_depth, rgb_image, batch_size)
     features = [np.asarray(f) for f in features]
     number_of_surfaces = int(np.max(surfaces) + 1)
@@ -149,6 +149,35 @@ def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=
 
     np.save(f"it_{load_iteration+1}.npy", Q_complete)
 
+def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_size=16):
+    depth_image, rgb_image, annotation = load_image(image_index)
+    log_depth = convert_depth_image(depth_image)
+    surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
+    features = extract_features_conv(log_depth, rgb_image)
+    number_of_surfaces = int(np.max(surfaces) + 1)
+    unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities_conv(surfaces, number_of_surfaces)
+    if load_iteration >= 1:
+        initial_Q = np.load(f"it_{load_iteration}.npy")
+
+    parameters = get_initial_guess_parameters()#load_parameters(load_index)
+    for f in features:
+        print(np.shape(f))
+    print(np.shape(unary_potentials))
+    print(np.shape(initial_Q))
+    matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
+    MFI_NN = mean_field_convolutional(number_of_surfaces, matrix, *parameters, 640, 480, 6)
+
+    # test_index = 371 * 640 + 524
+    # out = MFI_NN.predict([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],
+    #                      features[2][test_index:test_index+batch_size], features[3][test_index:test_index+batch_size],
+    #                      features[4][test_index:test_index+batch_size], unary_potentials[test_index:test_index+batch_size]], batch_size=batch_size)
+    # print(out)
+
+    Q = MFI_NN.predict([*[np.asarray([f]) for f in features], np.asarray([unary_potentials]), np.asarray([initial_Q])], batch_size=batch_size)
+    plot_surfaces(Q)
+
+    #np.save(f"it_{load_iteration+1}.npy", Q_complete)
+
 
 @njit()
 def do_iteration_2(image, number, size):
@@ -165,31 +194,28 @@ def do_iteration_2(image, number, size):
     return new_image
 
 @njit()
-def smooth_surface_calculations(depth_image, log_depth_image):
+def smooth_surface_calculations(depth_image):
     height, width = np.shape(depth_image)
     plane_image = np.zeros((height, width))
     factor_x = math.tan(viewing_angle_x / 2) * 2 / width
     factor_y = math.tan(viewing_angle_y / 2) * 2 / height
     threshold = 0.007003343675404672
-    size = 3
+    size = 4
     positions = [[0, size], [0, 2*size], [size, 2*size], [2*size, 2*size], [2*size, size], [2*size, 0], [size, 0], [0, 0]]
     for y in prange(height):
         #print(y)
-        #y = 253
         for x in range(width):
-            #x = 185
             d = depth_image[y][x]
             if d < 0.0001:
                 continue
             depth_factor_x = factor_x * d
             depth_factor_y = factor_y * d
-            curvature_scores = calculate_curvature_scores_2(depth_image, log_depth_image, size, y, x, width, height)
+            curvature_scores = calculate_curvature_scores(depth_image, size, y, x, np.asarray([depth_factor_x, depth_factor_y]), d, width, height)
 
-            plane_image[y][x] = np.max(curvature_scores)
-            # for i in range(len(positions)):
-            #     if np.max(np.abs(np.asarray([curvature_scores[p[0]][p[1]] for p in [positions[i], positions[i-1], positions[i-2], positions[i-3]]]))) < 0 or \
-            #         np.sum(curvature_scores) < threshold*16:
-            #         plane_image[y][x] = 1
+            for i in range(len(positions)):
+                if np.max(np.abs(np.asarray([curvature_scores[p[0]][p[1]] for p in [positions[i], positions[i-1], positions[i-2], positions[i-3]]]))) < 0 or \
+                    np.sum(curvature_scores) < threshold*32:
+                    plane_image[y][x] = 1
     return plane_image
 
 @njit()
@@ -288,6 +314,31 @@ def get_unary_potentials_and_initial_probabilities(surface_image, number_of_labe
     return unary_potentials, initial_probabilities
 
 @njit()
+def get_unary_potentials_and_initial_probabilities_conv(surface_image, number_of_labels):
+    height, width = np.shape(surface_image)
+    unary_potentials = np.zeros((height, width, number_of_labels))
+    initial_probabilities = np.zeros((height, width, number_of_labels))
+    for y in range(height):
+        for x in range(width):
+            if surface_image[y][x] == 0:
+                potential = np.ones(number_of_labels)/(number_of_labels-1)
+                potential[0] = 10
+                unary_potentials[y][x] = potential
+                prob = potential.copy()
+                prob[0] = 0
+                initial_probabilities[y][x] = prob
+            else:
+                potential = np.ones(number_of_labels)
+                potential[surface_image[y][x]] = 0
+                potential[0] = 10
+                unary_potentials[y][x] = potential
+                prob = np.ones(number_of_labels)/(number_of_labels-2)*0.1
+                prob[surface_image[y][x]] = 0.9
+                prob[0] = 0
+                initial_probabilities[y][x] = prob
+    return unary_potentials, initial_probabilities
+
+@njit()
 def extract_features(depth_image, lab_image, desired_batch_size):
     angle_image = calculate_normals_as_angles_final(depth_image)
     height, width = np.shape(depth_image)
@@ -311,6 +362,21 @@ def extract_features(depth_image, lab_image, desired_batch_size):
         features_3.append(np.asarray([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
         features_4.append(np.asarray([0.0, 0.0, 0.0, 0.0, 0.0]))
     return (features_1, features_3, features_4), number_to_fill, indices
+
+@njit()
+def extract_features_conv(depth_image, lab_image):
+    angle_image = calculate_normals_as_angles_final(depth_image)
+    height, width = np.shape(depth_image)
+    features_1 = np.zeros((height, width, 3))
+    features_2 = np.zeros((height, width, 6))
+    features_3 = np.zeros((height, width, 5))
+    for y in range(height):
+        for x in range(width):
+            features_1[y][x] = [y, x, depth_image[y][x]]
+            features_2[y][x] = [y, x, depth_image[y][x], lab_image[y][x][0], lab_image[y][x][1], lab_image[y][x][2]]
+            features_3[y][x] = [y, x, depth_image[y][x], angle_image[y][x][0], angle_image[y][x][1]]
+
+    return features_1, features_2, features_3
 
 def mean_field_update_NN(Q, unary_potentials, features, theta_1, theta_2, theta_3, theta_4, theta_5, w_1, w_2, w_3, w_4, w_5, weight, number_of_labels, batch_size = 32):
     features_1, features_2, features_3, features_4, features_5 = features
@@ -338,39 +404,13 @@ def plot_surface_image(surfaces):
     plt.show()
     return
 
-
-def find_smooth_surfaces_with_curvature_scores(depth_image, log_depth_image):
-    #depth_image = gaussian_filter_with_depth_factor(depth_image, 4)
-    #plot_array_PLT(log_depth_image)
-    depth_image = gaussian_filter_with_log_depth_cutoff(depth_image, log_depth_image, 5, 3)
-    #depth_image = median_filter(depth_image, 5)
-    #plot_array_PLT(log_depth_image)
-    #quit()
-    #points = depth_image[103][347-16:347+16]
-    #plt.plot(points)
-    #plt.show()
-    #print(points)
-    #quit()
-    thr = 0.007003343675404672
+def find_smooth_surfaces_with_curvature_scores(depth_image):
+    depth_image = gaussian_filter_with_depth_factor(depth_image, 4)
     print("Filter applied.")
-    surfaces = smooth_surface_calculations(depth_image, log_depth_image)
-    plot_array_PLT(surfaces)
-    surfaces = gaussian_filter(surfaces, 2)
-    plot_array_PLT(surfaces)
-    s = surfaces.copy()
-    t = 0.0002
-    s[surfaces > t] = 1
-    s[surfaces <= t] = 0
-    plot_array_PLT(s)
+    surfaces = smooth_surface_calculations(depth_image)
     print("Surface patches found.")
     surfaces = do_iteration_2(surfaces, 11, 2)
-    #surfaces = do_iteration_2(surfaces, 5, 1)
-    #surfaces = gaussian_filter(surfaces, 4)
-    depth_edges = find_edges.find_edges_from_depth_image(depth_image)
-    plot_array_PLT(depth_edges)
-    surfaces += depth_edges
-    surfaces[surfaces > 1] = 1
-    plot_array_PLT(surfaces<thr*32)
+    surfaces = do_iteration_2(surfaces, 5, 1)
     print("Smoothing iterations done.")
     #indexed_surfaces = find_consecutive_patches(surfaces)
     indexed_surfaces, segment_count = measure.label(surfaces, background=-1, return_num=True)
@@ -431,7 +471,7 @@ def check_image():
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image(test_indices[0])
+    test_model_on_image_2(test_indices[0])
     #check_image()
     #test_model_on_image(110)
     quit()
