@@ -160,12 +160,8 @@ def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_siz
         initial_Q = np.load(f"it_{load_iteration}.npy")
 
     parameters = get_initial_guess_parameters()#load_parameters(load_index)
-    for f in features:
-        print(np.shape(f))
-    print(np.shape(unary_potentials))
-    print(np.shape(initial_Q))
-    matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
-    MFI_NN = mean_field_convolutional(number_of_surfaces, matrix, *parameters, 640, 480, 6)
+
+    mean_field_convolutional_inference(number_of_surfaces, parameters, *np.shape(depth_image), 10, features, unary_potentials, initial_Q)
 
     # test_index = 371 * 640 + 524
     # out = MFI_NN.predict([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],

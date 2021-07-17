@@ -218,43 +218,27 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     model.summary()
     return model
 
-def calculate_similarities(features, theta, y, x, height, width):
-    y = -y
-    x = -x
-    # if y < 0:
-    #     if x < 0:
-    #         pad = tf.constant([[0, 0], [-y, kernel_size+y], [-x, kernel_size+x], [0, 0]])
-    #         pad2 = tf.constant([[0, 0], [0, kernel_size], [0, kernel_size], [0, 0]])
-    #     else:
-    #         pad = tf.constant([[0, 0], [-y, kernel_size-y], [kernel_size-x, x], [0, 0]])
-    #         pad2 = tf.constant([[0, 0], [0, kernel_size], [kernel_size, 0], [0, 0]])
-    # else:
-    #     if x < 0:
-    #         pad = tf.constant([[0, 0], [kernel_size - y, y], [-x, kernel_size + x], [0, 0]])
-    #         pad2 = tf.constant([[0, 0], [kernel_size, 0], [0, kernel_size], [0, 0]])
-    #     else:
-    #         pad = tf.constant([[0, 0], [kernel_size - y, y], [kernel_size - x, x], [0, 0]])
-    #         pad2 = tf.constant([[0, 0], [kernel_size, 0], [kernel_size, 0], [0, 0]])
-
-    f1 = features[:, abs(min(y, 0)):height-max(0, y), abs(min(x, 0)): width - max(0, x), :]
-    pad = tf.constant([[0, 0], [max(y, 0), abs(min(y, 0))], [max(x, 0), abs(min(x, 0))], [0, 0]])
-    f1 = tf.pad(f1, pad)
+def calculate_similarities(features, theta, begin, slice, pad):
+    #f1 = features[:, abs(min(y, 0)):height-max(0, y), abs(min(x, 0)): width - max(0, x), :]
+    f1 = tf.slice(features, begin[0], slice[0])
+    #pad = tf.constant([[0, 0], [max(y, 0), abs(min(y, 0))], [max(x, 0), abs(min(x, 0))], [0, 0]])
+    f1 = tf.pad(f1, pad[0])
 
     sub = tf.subtract(f1, features)
     squared = tf.square(sub)
     similarity = tf.exp(-tf.reduce_sum(tf.multiply(tf.broadcast_to(theta, tf.shape(squared)), squared), axis=-1))
     return similarity
 
+def similarity_model(features_1, features_2, features_3, Q, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2,
+                             theta_2_3, theta_3_1, theta_3_2, theta_3_3):
+    Q = tf.expand_dims(tf.constant(Q, dtype=tf.float32), axis=0)
+    features_1 = tf.expand_dims(tf.constant(features_1, dtype=tf.float32), axis=0)
+    features_2 = tf.expand_dims(tf.constant(features_2, dtype=tf.float32), axis=0)
+    features_3 = tf.expand_dims(tf.constant(features_3, dtype=tf.float32), axis=0)
 
-def mean_field_convolutional(number_of_surfaces, matrix, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2,
-                             theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, width, height, kernel_size):
-
-    Q =  layers.Input(shape=(height, width, number_of_surfaces), batch_size=1, dtype=tf.float32)
-    matrix = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.constant(matrix, dtype=tf.float32), axis=0), axis=0), axis=0)
-
-    features_1 = layers.Input(shape=(height, width, 3), batch_size=1, dtype=tf.float32)
-    features_2 = layers.Input(shape=(height, width, 6), batch_size=1, dtype=tf.float32)
-    features_3 = layers.Input(shape=(height, width, 5), batch_size=1, dtype=tf.float32)
+    begin = layers.Input(shape=(4,), dtype=tf.int32)
+    slice = layers.Input(shape=(4,), dtype=tf.int32)
+    pad = layers.Input(shape=(4, 2), dtype=tf.int32)
 
     theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(features_1), repeats=[2], axis=-1)
     theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(features_1), repeats=[1], axis=-1)
@@ -268,6 +252,81 @@ def mean_field_convolutional(number_of_surfaces, matrix, w_1, w_2, w_3, theta_1_
     theta_1 = tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1")
     theta_2 = tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2")
     theta_3 = tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3")
+
+    w_1 = Variable2(w_1, name="w_1")
+    w_2 = Variable2(w_2, name="w_2")
+    w_3 = Variable2(w_3, name="w_3")
+
+    similarities_1 = calculate_similarities(features_1, theta_1, begin, slice, pad)
+    similarities_2 = calculate_similarities(features_2, theta_2, begin, slice, pad)
+    similarities_3 = calculate_similarities(features_3, theta_3, begin, slice, pad)
+    similarity_sum = layers.Add()(
+           [layers.Multiply()([w_1(similarities_1), similarities_1]),
+            layers.Multiply()([w_2(similarities_2), similarities_2]),
+            layers.Multiply()([w_3(similarities_3), similarities_3])])
+    messages = tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(Q)), Q)
+    model = Model(inputs=[begin, slice, pad], outputs=messages)
+    return model
+
+def inference_model(number_of_surfaces, weight, matrix):
+    matrix = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.constant(matrix, dtype=tf.float32), axis=0), axis=0),
+                            axis=0)
+
+    unary_potentials = layers.Input(shape=(width, number_of_surfaces), batch_size=1, dtype=tf.float32)
+
+    messages = layers.Input(shape=(width, number_of_surfaces))
+
+    compatibility_values = tf.reduce_sum(
+        tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, number_of_surfaces, 1])), axis=-1)
+
+    compatibility_values = layers.Multiply()(
+        [Variable2(weight, name="weight")(compatibility_values), compatibility_values])
+
+    add = layers.Add()([unary_potentials, compatibility_values])
+    output = layers.Softmax()(-add)
+
+    model = Model(inputs=[messages, unary_potentials], outputs=output)
+    model.summary()
+    return model
+
+def sum_model(kernel_size, number_of_surfaces):
+    input = layers.Input(shape=((2*kernel_size + 1)**2, height, width, number_of_surfaces))
+    output = tf.reduce_sum(input, axis=1)
+    model = Model(inputs=[input], outputs=output)
+    return model
+
+def mean_field_convolutional_inference(number_of_surfaces, parameters, height, width, kernel_size, features, unary_potentials, Q):
+    model_sim = similarity_model(*features, Q, *parameters[:11])
+    begin = []
+    slice = []
+    pad = []
+    for y in range(-kernel_size, kernel_size + 1):
+        for x in range(-kernel_size, kernel_size + 1):
+            begin.append([0, abs(min(y, 0)), abs(min(x, 0)), 0])
+            slice.append([-1, height-max(0, y) - abs(min(y, 0)), width-max(0, x) - abs(min(x, 0)), -1])
+            pad.append([[0, 0], [max(y, 0), abs(min(y, 0))], [max(x, 0), abs(min(x, 0))], [0, 0]])
+    messages = model_sim.predict([np.asarray(begin, dtype="int32"), np.asarray(slice, dtype="int32"), np.asarray(pad, dtype="int32")], batch_size=1)
+
+    model_sum = sum_model(kernel_size, number_of_surfaces)
+    messages_reduced = model_sum.predict(messages)
+
+    matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
+    model_inf = inference_model(number_of_surfaces, kernel_size, parameters[11], matrix)
+    result = model_inf.predict(messages_reduced, unary_potentials)
+    return result
+
+
+
+def mean_field_convolutional_model(number_of_surfaces, matrix, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2,
+                             theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, width, height, kernel_size):
+
+    Q =  layers.Input(shape=(height, width, number_of_surfaces), batch_size=1, dtype=tf.float32)
+    matrix = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.constant(matrix, dtype=tf.float32), axis=0), axis=0), axis=0)
+
+    features_1 = layers.Input(shape=(height, width, 3), batch_size=1, dtype=tf.float32)
+    features_2 = layers.Input(shape=(height, width, 6), batch_size=1, dtype=tf.float32)
+    features_3 = layers.Input(shape=(height, width, 5), batch_size=1, dtype=tf.float32)
+
 
     unary_potentials = layers.Input(shape=(height, width, number_of_surfaces), batch_size=1, dtype=tf.float32)
 
