@@ -149,7 +149,29 @@ def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=
 
     np.save(f"it_{load_iteration+1}.npy", Q_complete)
 
-def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_size=16):
+def create_dataset(Q, unary_potentials, features_1, features_2, features_3, kernel_size, depth_image):
+    height, width, _ = np.shape(unary_potentials)
+    Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    unary_potentials = np.pad(unary_potentials, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    features_1 = np.pad(features_1, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    features_2 = np.pad(features_2, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    features_3 = np.pad(features_3, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    for y in range(kernel_size, height+kernel_size):
+        print(f"y: {y}")
+        Q_rows = Q[y-kernel_size:y+kernel_size+1]
+        unary_rows = unary_potentials[y-kernel_size:y+kernel_size+1]
+        f_1_rows = features_1[y-kernel_size:y+kernel_size+1]
+        f_2_rows = features_2[y-kernel_size:y+kernel_size+1]
+        f_3_rows = features_3[y-kernel_size:y+kernel_size+1]
+        for x in range(kernel_size, width+kernel_size):
+            if depth_image[y-kernel_size][x-kernel_size] > 0.0001:
+                yield f_1_rows[kernel_size][x], f_2_rows[kernel_size][x], f_3_rows[kernel_size][x],\
+                      unary_rows[kernel_size][x], Q_rows[:, x-kernel_size:x+kernel_size+1],\
+                      f_1_rows[:, x-kernel_size:x+kernel_size+1], f_2_rows[:, x-kernel_size:x+kernel_size+1],\
+                      f_3_rows[:, x-kernel_size:x+kernel_size+1]
+
+
+def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_size=16, kernel_size = 10):
     depth_image, rgb_image, annotation = load_image(image_index)
     log_depth = convert_depth_image(depth_image)
     surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
@@ -161,7 +183,26 @@ def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_siz
 
     parameters = get_initial_guess_parameters()#load_parameters(load_index)
 
-    mean_field_convolutional_inference(number_of_surfaces, parameters, *np.shape(depth_image), 10, features, unary_potentials, initial_Q)
+    dataset = tf.data.Dataset.from_generator(create_dataset, output_types=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+                                             args=(initial_Q, unary_potentials, *features, kernel_size, depth_image)).batch(batch_size)
+
+    matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
+    MFI_NN = mean_field_convolutional_model(number_of_surfaces, matrix, *parameters, batch_size, kernel_size)
+
+    Q_result = np.zeros(np.shape(initial_Q))
+    x = 0
+    y = 0
+    for d in dataset:
+        Q_part = MFI_NN.predict(d)
+        i = 0
+        while i < len(Q_part):
+            if depth_image[y][x] > 0.0001:
+                Q_result[y][x] = Q_part[i]
+                i += 1
+            x += 1
+            if x >= 640:
+                x = 0
+                y += 1
 
     # test_index = 371 * 640 + 524
     # out = MFI_NN.predict([features[0][test_index:test_index+batch_size], features[1][test_index:test_index+batch_size],
@@ -169,7 +210,6 @@ def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_siz
     #                      features[4][test_index:test_index+batch_size], unary_potentials[test_index:test_index+batch_size]], batch_size=batch_size)
     # print(out)
 
-    Q = MFI_NN.predict([*[np.asarray([f]) for f in features], np.asarray([unary_potentials]), np.asarray([initial_Q])], batch_size=batch_size)
     plot_surfaces(Q)
 
     #np.save(f"it_{load_iteration+1}.npy", Q_complete)
@@ -316,14 +356,7 @@ def get_unary_potentials_and_initial_probabilities_conv(surface_image, number_of
     initial_probabilities = np.zeros((height, width, number_of_labels))
     for y in range(height):
         for x in range(width):
-            if surface_image[y][x] == 0:
-                potential = np.ones(number_of_labels)/(number_of_labels-1)
-                potential[0] = 10
-                unary_potentials[y][x] = potential
-                prob = potential.copy()
-                prob[0] = 0
-                initial_probabilities[y][x] = prob
-            else:
+            if surface_image[y][x] != 0:
                 potential = np.ones(number_of_labels)
                 potential[surface_image[y][x]] = 0
                 potential[0] = 10
