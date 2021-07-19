@@ -149,29 +149,23 @@ def test_model_on_image(image_index, load_index=2, load_iteration=0, batch_size=
 
     np.save(f"it_{load_iteration+1}.npy", Q_complete)
 
-def create_dataset(Q, unary_potentials, features_1, features_2, features_3, kernel_size, depth_image):
+def create_dataset(Q, unary_potentials, features_1, features_2, features_3, kernel_size, depth_image, matrix):
     height, width, _ = np.shape(unary_potentials)
-    Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
-    unary_potentials = np.pad(unary_potentials, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
-    features_1 = np.pad(features_1, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
-    features_2 = np.pad(features_2, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
-    features_3 = np.pad(features_3, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    Q_windows = np.lib.stride_tricks.sliding_window_view(Q, (kernel_size*2+1, kernel_size*2+1), axis=(0, 1))
+    f_1_windows = np.lib.stride_tricks.sliding_window_view(features_1, (kernel_size*2+1, kernel_size*2+1), axis=(0, 1))
+    f_2_windows = np.lib.stride_tricks.sliding_window_view(features_2, (kernel_size*2+1, kernel_size*2+1), axis=(0, 1))
+    f_3_windows = np.lib.stride_tricks.sliding_window_view(features_3, (kernel_size*2+1, kernel_size*2+1), axis=(0, 1))
+
     for y in range(kernel_size, height+kernel_size):
         print(f"y: {y}")
-        Q_rows = Q[y-kernel_size:y+kernel_size+1]
-        unary_rows = unary_potentials[y-kernel_size:y+kernel_size+1]
-        f_1_rows = features_1[y-kernel_size:y+kernel_size+1]
-        f_2_rows = features_2[y-kernel_size:y+kernel_size+1]
-        f_3_rows = features_3[y-kernel_size:y+kernel_size+1]
         for x in range(kernel_size, width+kernel_size):
             if depth_image[y-kernel_size][x-kernel_size] > 0.0001:
-                yield f_1_rows[kernel_size][x], f_2_rows[kernel_size][x], f_3_rows[kernel_size][x],\
-                      unary_rows[kernel_size][x], Q_rows[:, x-kernel_size:x+kernel_size+1],\
-                      f_1_rows[:, x-kernel_size:x+kernel_size+1], f_2_rows[:, x-kernel_size:x+kernel_size+1],\
-                      f_3_rows[:, x-kernel_size:x+kernel_size+1]
+                yield features_1[y][x], features_2[y][x], features_3[y][x],\
+                      unary_potentials[y][x], np.swapaxes(Q_windows[y][x], 0, 2), \
+                      np.swapaxes(f_1_windows[y][x], 0, 2), np.swapaxes(f_2_windows[y][x], 0, 2), np.swapaxes(f_3_windows[y][x], 0, 2), matrix
 
 
-def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_size=16, kernel_size = 10):
+def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_size=8192, kernel_size = 3):
     depth_image, rgb_image, annotation = load_image(image_index)
     log_depth = convert_depth_image(depth_image)
     surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
@@ -180,24 +174,24 @@ def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_siz
     unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities_conv(surfaces, number_of_surfaces)
     if load_iteration >= 1:
         initial_Q = np.load(f"it_{load_iteration}.npy")
-
     parameters = get_initial_guess_parameters()#load_parameters(load_index)
-
-    dataset = tf.data.Dataset.from_generator(create_dataset, output_types=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
-                                             args=(initial_Q, unary_potentials, *features, kernel_size, depth_image)).batch(batch_size)
-
     matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
-    MFI_NN = mean_field_convolutional_model(number_of_surfaces, matrix, *parameters, batch_size, kernel_size)
+    dataset = tf.data.Dataset.from_generator(create_dataset, output_types=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+                                             args=(initial_Q, unary_potentials, *features, kernel_size, depth_image, matrix)).batch(batch_size)
 
-    Q_result = np.zeros(np.shape(initial_Q))
+    MFI_NN = mean_field_convolutional_model(number_of_surfaces, *parameters, kernel_size)
+
     x = 0
     y = 0
     for d in dataset:
+        print("start")
         Q_part = MFI_NN.predict(d)
+        print("end")
+        print()
         i = 0
         while i < len(Q_part):
             if depth_image[y][x] > 0.0001:
-                Q_result[y][x] = Q_part[i]
+                #Q_result[y][x] = Q_part[i]
                 i += 1
             x += 1
             if x >= 640:

@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-from keras import layers, Model, initializers, optimizers, regularizers
+from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
 
 variable_names = ["w_1", "w_3", "w_4", "theta_1_1", "theta_1_2", "theta_3_1", "theta_3_2", "theta_3_3", "theta_4_1", "theta_4_2", "theta_4_3", "weight"]
 
@@ -218,23 +218,24 @@ def mean_field_update_model_learned_2(number_of_pixels, number_of_surfaces, Q, f
     model.summary()
     return model
 
-def mean_field_convolutional_model(number_of_surfaces, matrix, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, batch_size, kernel_size):
+def mean_field_convolutional_model(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1,
+                                   theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size):
 
     Q = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, number_of_surfaces), dtype=tf.float32)
     unary_potentials = layers.Input(shape=(1,), dtype=tf.float32)
-    matrix = tf.tile(tf.expand_dims(tf.constant(matrix, dtype=tf.float32), axis=0), [batch_size, 1, 1])
+    matrix = layers.Input(shape=(number_of_surfaces, number_of_surfaces), dtype=tf.float32)
     mask_np = np.ones((1, kernel_size*2+1, kernel_size*2+1, number_of_surfaces))
     mask_np[0][kernel_size][kernel_size] = np.zeros(number_of_surfaces)
     mask = tf.constant(mask_np, dtype=tf.float32)
     Q_2 = tf.multiply(Q, tf.broadcast_to(mask, tf.shape(Q)))
 
-    features_1 = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, 3), batch_size=batch_size, dtype=tf.float32)
-    features_2 = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, 6), batch_size=batch_size, dtype=tf.float32)
-    features_3 = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, 5), batch_size=batch_size, dtype=tf.float32)
+    features_1 = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, 3), dtype=tf.float32)
+    features_2 = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, 6), dtype=tf.float32)
+    features_3 = layers.Input(shape=(kernel_size*2+1, kernel_size*2+1, 5), dtype=tf.float32)
 
-    feature_1 = layers.Input(shape=(3,), batch_size=batch_size, dtype=tf.float32)
-    feature_2 = layers.Input(shape=(6,), batch_size=batch_size, dtype=tf.float32)
-    feature_3 = layers.Input(shape=(5,), batch_size=batch_size, dtype=tf.float32)
+    feature_1 = layers.Input(shape=(3,), dtype=tf.float32)
+    feature_2 = layers.Input(shape=(6,), dtype=tf.float32)
+    feature_3 = layers.Input(shape=(5,), dtype=tf.float32)
 
     feature_1_expanded = tf.tile(tf.expand_dims(tf.expand_dims(feature_1, axis=-2), axis=-2), [1, kernel_size*2+1, kernel_size*2+1, 1])
     feature_2_expanded = tf.tile(tf.expand_dims(tf.expand_dims(feature_2, axis=-2), axis=-2), [1, kernel_size*2+1, kernel_size*2+1, 1])
@@ -273,7 +274,7 @@ def mean_field_convolutional_model(number_of_surfaces, matrix, w_1, w_2, w_3, th
     add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, compatibility_values])
 
     output = layers.Softmax()(-add)
-    model = Model(inputs=[feature_1, feature_2, feature_3, unary_potentials, Q, features_1, features_2, features_3], outputs=output)
+    model = Model(inputs=[feature_1, feature_2, feature_3, unary_potentials, Q, features_1, features_2, features_3, matrix], outputs=output)
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
                   run_eagerly=False)
     model.summary()
@@ -307,6 +308,74 @@ def mean_field_update_assemble_surfaces(number_of_surfaces, sigma, weight, matri
 
     output = Q
     model = Model(inputs=[similarities, unary_potentials, Q], outputs=output)
+    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
+                  run_eagerly=False)
+    model.summary()
+    return model
+
+def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1,
+                                   theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width):
+    k = kernel_size*2+1
+    Q = layers.Input(shape=(height, width, number_of_surfaces), dtype=tf.float32)
+    unary_potentials = layers.Input(shape=(height, width, number_of_surfaces), dtype=tf.float32)
+    matrix = layers.Input(shape=(number_of_surfaces, number_of_surfaces), dtype=tf.float32)
+
+    mask_np = np.ones((1, k, k, number_of_surfaces))
+    mask_np[0][kernel_size][kernel_size] = np.zeros(number_of_surfaces)
+    mask = tf.constant(mask_np, dtype=tf.float32)
+
+    features_1 = layers.Input(shape=(height, width, 3), dtype=tf.float32)
+    features_2 = layers.Input(shape=(height, width, 6), dtype=tf.float32)
+    features_3 = layers.Input(shape=(height, width, 5), dtype=tf.float32)
+
+    windows_Q = tf.reshape(tf.image.extract_patches(Q, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, number_of_surfaces))
+    windows_Q = tf.multiply(windows_Q, tf.broadcast_to(tf.expand_dims(tf.expand_dims(mask, axis=0), axis=0), tf.shape(windows_Q)))
+    windows_unary = tf.reshape(tf.image.extract_patches(unary_potentials, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, number_of_surfaces))
+    windows_f_1 = tf.reshape(tf.image.extract_patches(features_1, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, 3))
+    windows_f_2 = tf.reshape(tf.image.extract_patches(features_2, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, 6))
+    windows_f_3 = tf.reshape(tf.image.extract_patches(features_3, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, 5))
+
+    feature_1 = tf.tile(tf.gather(tf.gather(windows_f_1, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
+    feature_2 = tf.tile(tf.gather(tf.gather(windows_f_2, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
+    feature_3 = tf.tile(tf.gather(tf.gather(windows_f_3, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
+
+    theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(feature_1), repeats=[2], axis=-1)
+    theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(feature_1), repeats=[1], axis=-1)
+    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_2_1")(feature_1), repeats=[2], axis=-1)
+    theta_2_2 = tf.repeat(Variable(theta_2_2, name="theta_2_2")(feature_1), repeats=[1], axis=-1)
+    theta_2_3 = tf.repeat(Variable(theta_2_3, name="theta_2_3")(feature_1), repeats=[3], axis=-1)
+    theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_3_1")(feature_1), repeats=[2], axis=-1)
+    theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_3_2")(feature_1), repeats=[1], axis=-1)
+    theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_3_3")(feature_1), repeats=[2], axis=-1)
+
+    theta_1 = tf.expand_dims(tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1"), axis=1)
+    theta_2 = tf.expand_dims(tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2"), axis=1)
+    theta_3 = tf.expand_dims(tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3"), axis=1)
+
+    differences_1 = tf.subtract(windows_f_1, feature_1)
+    similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_1), tf.broadcast_to(theta_1, tf.shape(differences_1))), axis=-1))
+
+    differences_2 = tf.subtract(windows_f_2, feature_2)
+    similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_2), tf.broadcast_to(theta_2, tf.shape(differences_2))), axis=-1))
+
+    differences_3 = tf.subtract(windows_f_3, feature_3)
+    similarities_3 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_3), tf.broadcast_to(theta_3, tf.shape(differences_3))), axis=-1))
+
+    similarity_sum = layers.Add()([layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
+                                   layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
+                                   layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3])])
+
+    messages = tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(windows_Q)), windows_Q), axis=1), axis=1)
+    messages = layers.Multiply()([Variable2(weight, name="weight")(messages), messages])
+
+    compatibility_values = tf.reduce_sum(
+        tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=1), [1, number_of_surfaces, 1])), axis=-1)
+    add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, compatibility_values])
+
+    output = layers.Softmax()(-add)
+    model = Model(
+        inputs=[feature_1, feature_2, feature_3, unary_potentials, Q, features_1, features_2, features_3, matrix],
+        outputs=output)
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
                   run_eagerly=False)
     model.summary()
