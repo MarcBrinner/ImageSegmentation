@@ -208,7 +208,7 @@ def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_siz
 
     #np.save(f"it_{load_iteration+1}.npy", Q_complete)
 
-def get_inputs(features, unary_potentials, Q, kernel_size, height, width, matrix):
+def get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, matrix):
     features_1, features_2, features_3 = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
     Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
     f_1 = []
@@ -217,14 +217,6 @@ def get_inputs(features, unary_potentials, Q, kernel_size, height, width, matrix
     Q_in = []
     unary = []
     matrix_in = []
-
-    div_x = 20
-    div_y = 20
-
-    size_x = int(width/div_x)
-    size_y = int(height/div_y)
-    print(size_x)
-    print(size_y)
 
     for x in range(div_x):
         for y in range(div_y):
@@ -235,10 +227,18 @@ def get_inputs(features, unary_potentials, Q, kernel_size, height, width, matrix
             Q_in.append(Q[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
             unary.append(unary_potentials[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x])
             matrix_in.append(matrix)
-    return [np.asarray(x) for x in [unary, Q_in, f_1, f_2, f_3, matrix_in]], size_y, size_x
+    return [np.asarray(x) for x in [unary, Q_in, f_1, f_2, f_3, matrix_in]]
 
+def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width, number_of_surfaces):
+    Q = np.zeros((height, width, number_of_surfaces))
+    index = 0
+    for x in range(div_x):
+        for y in range(div_y):
+            Q[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x, :] = outputs[index]
+            index += 1
+    return Q
 
-def test_model_on_image_3(image_index, load_iteration=0, kernel_size = 5):
+def test_model_on_image_3(image_index, load_iteration=0, kernel_size = 10):
     depth_image, rgb_image, annotation = load_image(image_index)
     height, width = np.shape(depth_image)
     log_depth = convert_depth_image(depth_image)
@@ -250,10 +250,16 @@ def test_model_on_image_3(image_index, load_iteration=0, kernel_size = 5):
         initial_Q = np.load(f"it_{load_iteration}.npy")
     parameters = get_initial_guess_parameters()#load_parameters(load_index)
     matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
-    dataset, height, width = get_inputs(features, unary_potentials, initial_Q, kernel_size, height, width, matrix)
-    MFI_NN = conv_crf(number_of_surfaces, *parameters, kernel_size, height, width)
+
+    div_x, div_y = 20, 20
+    size_x, size_y = int(width / div_x), int(height / div_y)
+    dataset = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, matrix)
+
+    MFI_NN = conv_crf(number_of_surfaces, *parameters, kernel_size, size_y, size_x)
     out = MFI_NN.predict(dataset, batch_size=1)
-    print(np.shape(out))
+
+    Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+    plot_surfaces(Q)
 
 @njit()
 def do_iteration_2(image, number, size):

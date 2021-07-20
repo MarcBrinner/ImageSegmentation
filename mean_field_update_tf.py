@@ -34,7 +34,7 @@ class Variable(layers.Layer):
         return tf.broadcast_to(self.kernel, (tf.shape(input_data)[0], self.output_shape2[0], self.output_shape2[1]))
 
     def compute_output_shape(self, input_shape):
-        return (input_shape[0], self.output_shape2[0])
+        return input_shape[0], self.output_shape2[0]
 
 class Variable2(layers.Layer):
     def __init__(self, initial_value, **kwargs):
@@ -314,7 +314,6 @@ def mean_field_update_assemble_surfaces(number_of_surfaces, sigma, weight, matri
     return model
 
 def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width):
-
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, number_of_surfaces), dtype=tf.float32)
     unary_potentials = layers.Input(shape=(height, width, number_of_surfaces), dtype=tf.float32)
@@ -335,9 +334,9 @@ def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1,
     windows_f_2 = tf.reshape(tf.image.extract_patches(features_2, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 6))
     windows_f_3 = tf.reshape(tf.image.extract_patches(features_3, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 5))
 
-    feature_1 = tf.tile(tf.gather(tf.gather(windows_f_1, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
-    feature_2 = tf.tile(tf.gather(tf.gather(windows_f_2, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
-    feature_3 = tf.tile(tf.gather(tf.gather(windows_f_3, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
+    feature_1 = tf.tile(tf.gather(tf.gather(windows_f_1, [kernel_size], axis=3), [kernel_size], axis=4), [1, 1, 1, k, k, 1])
+    feature_2 = tf.tile(tf.gather(tf.gather(windows_f_2, [kernel_size], axis=3), [kernel_size], axis=4), [1, 1, 1, k, k, 1])
+    feature_3 = tf.tile(tf.gather(tf.gather(windows_f_3, [kernel_size], axis=3), [kernel_size], axis=4), [1, 1, 1, k, k, 1])
 
     theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(feature_1), repeats=[2], axis=-1)
     theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(feature_1), repeats=[1], axis=-1)
@@ -371,7 +370,8 @@ def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1,
     compatibility_values = tf.reduce_sum(tf.multiply(matrix_expanded, tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, 1, number_of_surfaces, 1])), axis=-1)
     add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, compatibility_values])
 
-    output = layers.Softmax()(-add)
+    output = layers.Softmax()(-add)  # (400, 24, 32, 11, 11, 3)
+
     model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, matrix], outputs=output)
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[], run_eagerly=False)
     model.summary()
