@@ -1,7 +1,9 @@
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
 from image_filters import *
 from image_operations import calculate_curvature_scores
 from scipy.spatial.transform import Rotation
-from plot_image import plot_array
 
 @njit()
 def calculate_normals_plane_fitting(image, neighborhood_size):
@@ -187,3 +189,13 @@ def calculate_normals_as_angles_final(depth_image, plot_normals=False):
     angles = normals_to_angles(normals)
     angles = gaussian_filter_with_depth_check(angles, 5, 2, depth_image, np.asarray([math.pi, math.pi]))
     return angles
+
+def calculate_normals_GPU_model(pool_size=2):
+    p = pool_size*2+1
+    depth_image = layers.Input(shape=(None, None), dtype=tf.int32)
+    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
+    smoothed = layers.AveragePooling2D(pool_size=(p, p), padding='same')(depth_image_expanded)
+    condition = tf.greater(depth_image, 0.0001)
+    sums = layers.AveragePooling2D(pool_size=(p, p), padding='same')(condition)
+    smoothed = tf.math.divide_no_nan(smoothed, sums)
+
