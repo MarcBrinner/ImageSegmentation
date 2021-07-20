@@ -313,27 +313,27 @@ def mean_field_update_assemble_surfaces(number_of_surfaces, sigma, weight, matri
     model.summary()
     return model
 
-def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1,
-                                   theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width):
+def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width):
+
     k = kernel_size*2+1
-    Q = layers.Input(shape=(height, width, number_of_surfaces), dtype=tf.float32)
+    Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, number_of_surfaces), dtype=tf.float32)
     unary_potentials = layers.Input(shape=(height, width, number_of_surfaces), dtype=tf.float32)
     matrix = layers.Input(shape=(number_of_surfaces, number_of_surfaces), dtype=tf.float32)
+    matrix_expanded = tf.tile(tf.expand_dims(tf.expand_dims(matrix, axis=1), axis=1), [1, height, width, 1, 1])
 
     mask_np = np.ones((1, k, k, number_of_surfaces))
     mask_np[0][kernel_size][kernel_size] = np.zeros(number_of_surfaces)
     mask = tf.constant(mask_np, dtype=tf.float32)
 
-    features_1 = layers.Input(shape=(height, width, 3), dtype=tf.float32)
-    features_2 = layers.Input(shape=(height, width, 6), dtype=tf.float32)
-    features_3 = layers.Input(shape=(height, width, 5), dtype=tf.float32)
+    features_1 = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, 3), dtype=tf.float32)
+    features_2 = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, 6), dtype=tf.float32)
+    features_3 = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, 5), dtype=tf.float32)
 
-    windows_Q = tf.reshape(tf.image.extract_patches(Q, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, number_of_surfaces))
+    windows_Q = tf.reshape(tf.image.extract_patches(Q, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, number_of_surfaces))
     windows_Q = tf.multiply(windows_Q, tf.broadcast_to(tf.expand_dims(tf.expand_dims(mask, axis=0), axis=0), tf.shape(windows_Q)))
-    windows_unary = tf.reshape(tf.image.extract_patches(unary_potentials, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, number_of_surfaces))
-    windows_f_1 = tf.reshape(tf.image.extract_patches(features_1, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, 3))
-    windows_f_2 = tf.reshape(tf.image.extract_patches(features_2, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, 6))
-    windows_f_3 = tf.reshape(tf.image.extract_patches(features_3, [1, kernel_size*2+1, kernel_size*2+1, 1], padding='SAME'), (1, height, width, k, k, 5))
+    windows_f_1 = tf.reshape(tf.image.extract_patches(features_1, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 3))
+    windows_f_2 = tf.reshape(tf.image.extract_patches(features_2, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 6))
+    windows_f_3 = tf.reshape(tf.image.extract_patches(features_3, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 5))
 
     feature_1 = tf.tile(tf.gather(tf.gather(windows_f_1, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
     feature_2 = tf.tile(tf.gather(tf.gather(windows_f_2, [k], axis=3), [k], axis=4), [1, 1, 1, k, k, 1])
@@ -365,19 +365,15 @@ def conv_crf(number_of_surfaces, w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1,
                                    layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
                                    layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3])])
 
-    messages = tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(windows_Q)), windows_Q), axis=1), axis=1)
+    messages = tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2), axis=-2)
     messages = layers.Multiply()([Variable2(weight, name="weight")(messages), messages])
 
-    compatibility_values = tf.reduce_sum(
-        tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=1), [1, number_of_surfaces, 1])), axis=-1)
+    compatibility_values = tf.reduce_sum(tf.multiply(matrix_expanded, tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, 1, number_of_surfaces, 1])), axis=-1)
     add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, compatibility_values])
 
     output = layers.Softmax()(-add)
-    model = Model(
-        inputs=[feature_1, feature_2, feature_3, unary_potentials, Q, features_1, features_2, features_3, matrix],
-        outputs=output)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[],
-                  run_eagerly=False)
+    model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, matrix], outputs=output)
+    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-5), metrics=[], run_eagerly=False)
     model.summary()
     return model
 

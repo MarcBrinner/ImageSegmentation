@@ -208,6 +208,52 @@ def test_model_on_image_2(image_index, load_index=2, load_iteration=0, batch_siz
 
     #np.save(f"it_{load_iteration+1}.npy", Q_complete)
 
+def get_inputs(features, unary_potentials, Q, kernel_size, height, width, matrix):
+    features_1, features_2, features_3 = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
+    Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
+    f_1 = []
+    f_2 = []
+    f_3 = []
+    Q_in = []
+    unary = []
+    matrix_in = []
+
+    div_x = 20
+    div_y = 20
+
+    size_x = int(width/div_x)
+    size_y = int(height/div_y)
+    print(size_x)
+    print(size_y)
+
+    for x in range(div_x):
+        for y in range(div_y):
+            f_1.append(features_1[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
+            print(np.shape(f_1[-1]))
+            f_2.append(features_2[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
+            f_3.append(features_3[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
+            Q_in.append(Q[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
+            unary.append(unary_potentials[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x])
+            matrix_in.append(matrix)
+    return [np.asarray(x) for x in [unary, Q_in, f_1, f_2, f_3, matrix_in]], size_y, size_x
+
+
+def test_model_on_image_3(image_index, load_iteration=0, kernel_size = 5):
+    depth_image, rgb_image, annotation = load_image(image_index)
+    height, width = np.shape(depth_image)
+    log_depth = convert_depth_image(depth_image)
+    surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
+    features = extract_features_conv(log_depth, rgb_image)
+    number_of_surfaces = int(np.max(surfaces) + 1)
+    unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities_conv(surfaces, number_of_surfaces)
+    if load_iteration >= 1:
+        initial_Q = np.load(f"it_{load_iteration}.npy")
+    parameters = get_initial_guess_parameters()#load_parameters(load_index)
+    matrix = np.ones((number_of_surfaces, number_of_surfaces)) - np.identity(number_of_surfaces)
+    dataset, height, width = get_inputs(features, unary_potentials, initial_Q, kernel_size, height, width, matrix)
+    MFI_NN = conv_crf(number_of_surfaces, *parameters, kernel_size, height, width)
+    out = MFI_NN.predict(dataset, batch_size=1)
+    print(np.shape(out))
 
 @njit()
 def do_iteration_2(image, number, size):
@@ -494,7 +540,7 @@ def check_image():
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image_2(test_indices[0])
+    test_model_on_image_3(test_indices[0])
     #check_image()
     #test_model_on_image(110)
     quit()
