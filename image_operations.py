@@ -4,8 +4,6 @@ from PIL import ImageCms, Image
 from numba import njit
 
 neighborhood_value = 7
-viewing_angle_x = 62.0 / 180 * math.pi
-viewing_angle_y = 48.6 / 180 * math.pi
 
 def rgb_to_Lab(image):
     image = Image.fromarray(image)

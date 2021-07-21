@@ -1,8 +1,7 @@
 import numpy as np
 import scipy.ndimage.filters
-import math
-from image_operations import viewing_angle_y, viewing_angle_x
 from numba import njit
+from standard_values import *
 
 def median_filter(image, size):
     return scipy.ndimage.filters.median_filter(image, size)

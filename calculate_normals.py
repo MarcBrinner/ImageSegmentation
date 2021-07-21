@@ -1,9 +1,12 @@
 import tensorflow as tf
-import numpy as np
-from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
+import time
+from tensorflow.keras import layers, Model
 from image_filters import *
 from image_operations import calculate_curvature_scores
 from scipy.spatial.transform import Rotation
+from load_images import load_image
+from plot_image import plot_normals
+from standard_values import *
 
 @njit()
 def calculate_normals_plane_fitting(image, neighborhood_size):
@@ -190,12 +193,78 @@ def calculate_normals_as_angles_final(depth_image, plot_normals=False):
     angles = gaussian_filter_with_depth_check(angles, 5, 2, depth_image, np.asarray([math.pi, math.pi]))
     return angles
 
-def calculate_normals_GPU_model(pool_size=2):
-    p = pool_size*2+1
-    depth_image = layers.Input(shape=(None, None), dtype=tf.int32)
-    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
-    smoothed = layers.AveragePooling2D(pool_size=(p, p), padding='same')(depth_image_expanded)
-    condition = tf.greater(depth_image, 0.0001)
-    sums = layers.AveragePooling2D(pool_size=(p, p), padding='same')(condition)
-    smoothed = tf.math.divide_no_nan(smoothed, sums)
+def angle_calculator(vec):
+    mult_1 = tf.constant(np.asarray([0.0, 1.0, 1.0]), dtype=tf.float32)
+    mult_2 = tf.constant(np.asarray([1.0, 0.0, 1.0]), dtype=tf.float32)
 
+    new_vec_1 = tf.multiply(vec, mult_1)
+    new_vec_2 = tf.multiply(vec, mult_2)
+
+    angle_1 = tf.acos(tf.math.divide_no_nan(-new_vec_1[2], tf.linalg.norm(new_vec_1))) * tf.sign(new_vec_1[1])
+    angle_2 = tf.acos(tf.math.divide_no_nan(-new_vec_2[2], tf.linalg.norm(new_vec_2))) * -tf.sign(new_vec_2[0])
+    return tf.stack([angle_1, angle_2], axis=0)
+
+
+def row_wrapper(row):
+    return tf.map_fn(angle_calculator, row)
+
+class Calc_Angles(layers.Layer):
+
+    def call(self, input):
+        return tf.vectorized_map(lambda x: tf.vectorized_map(angle_calculator, x), input)
+
+def calculate_normals_GPU_model(pool_size=2, height=height, width=width):
+    p = pool_size*2+1
+
+    depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
+    factor_x = layers.Input(shape=(1,), dtype=tf.float32)
+    factor_y = layers.Input(shape=(1,), dtype=tf.float32)
+
+    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
+    smoothed = layers.AveragePooling2D(pool_size=(p, p), padding='same', strides=(1, 1))(depth_image_expanded)
+    condition = tf.cast(tf.greater(depth_image_expanded, 0.0001), tf.float32)
+    sums = layers.AveragePooling2D(pool_size=(p, p), padding='same', strides=(1, 1))(condition)
+    smoothed = tf.math.divide_no_nan(smoothed, sums)
+    smoothed = tf.squeeze(smoothed, axis=0)
+
+    zeros = tf.zeros(tf.shape(smoothed))
+    x_values = tf.multiply(tf.broadcast_to(factor_x, tf.shape(smoothed)), smoothed)
+    y_values = tf.multiply(tf.broadcast_to(factor_y, tf.shape(smoothed)), smoothed)
+
+    pad_1 = tf.pad(smoothed, [[2, 0], [0, 0], [0, 0]])
+    pad_2 = tf.pad(smoothed, [[0, 2], [0, 0], [0, 0]])
+    pad_3 = tf.pad(smoothed, [[0, 0], [2, 0], [0, 0]])
+    pad_4 = tf.pad(smoothed, [[0, 0], [0, 2], [0, 0]])
+
+    sub_1 = tf.subtract(pad_1, pad_2)[1:-1, :, :]
+    sub_2 = tf.subtract(pad_4, pad_3)[:, 1:-1, :]
+
+    concat_1 = layers.Concatenate(axis=-1)([zeros, y_values, sub_1])
+    concat_2 = layers.Concatenate(axis=-1)([x_values, zeros, sub_2])
+
+    vectors = tf.linalg.cross(concat_1, concat_2)
+    condition = -tf.cast(tf.greater(tf.gather(vectors, [2], axis=-1), 0), tf.float32)
+    vectors = 2*tf.multiply(tf.broadcast_to(condition, tf.shape(vectors)), vectors) + vectors
+
+    norm = tf.norm(vectors, axis=-1, keepdims=True)
+    normals = tf.math.divide_no_nan(vectors, tf.broadcast_to(norm, tf.shape(vectors)))
+    angles = Calc_Angles()(normals)
+    model = Model(inputs=[depth_image, factor_x, factor_y], outputs=angles)
+    return model
+
+def create_normal_calculation_function_GPU():
+    model = calculate_normals_GPU_model()
+    return lambda image: model.predict([np.asarray([image]), np.asarray([2*factor_x]), np.asarray([2*factor_y])], batch_size=1)
+
+
+def main():
+    image = load_image(110)[0]
+    normals_calculator = create_normal_calculation_function_GPU()
+    t = time.time()
+    normals = normals_calculator(image)
+    print(time.time() - t)
+    normals2 = calculate_normals_as_angles_final(image)
+    plot_normals(normals)
+
+if __name__ == '__main__':
+    main()

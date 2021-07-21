@@ -13,3 +13,7 @@ def plot_array(array, normalize=False):
 def plot_array_PLT(array):
     PLT.imshow(array)
     PLT.show()
+
+def plot_normals(normals_as_vectors):
+    normals_rgb = np.asarray(normals_as_vectors*127.5 + 127.5, dtype="uint8")
+    plot_array(normals_rgb)
