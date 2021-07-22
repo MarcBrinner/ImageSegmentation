@@ -1,8 +1,11 @@
+import math
+
+import numpy as np
 import tensorflow as tf
 import time
 from tensorflow.keras import layers, Model
 from image_filters import *
-from image_operations import calculate_curvature_scores
+from image_operations import calculate_curvature_scores, convert_depth_image
 from scipy.spatial.transform import Rotation
 from load_images import load_image
 from plot_image import plot_normals
@@ -156,7 +159,9 @@ def normals_to_angles(normal_image):
     for y in range(height):
         for x in range(width):
             vec = normal_image[y][x]
-            if np.linalg.norm(vec) < 0.001: continue
+            if np.linalg.norm(vec) < 0.001:
+                angles[y][x] = [math.pi, math.pi]
+                continue
 
             vec_proj = vec.copy()
             vec_proj[0] = 0
@@ -186,11 +191,11 @@ def angles_to_normals(angles, depth_image):
     return normals
 
 @njit()
-def calculate_normals_as_angles_final(depth_image, plot_normals=False):
-    smoothed = uniform_filter_without_zero(depth_image, 2)
+def calculate_normals_as_angles_final(depth_image, log_depth):
+    smoothed = uniform_filter_with_log_depth_cutoff_depth(depth_image, log_depth, 2)
     normals = calculate_normals_cross_product(smoothed)
     angles = normals_to_angles(normals)
-    angles = gaussian_filter_with_depth_check(angles, 5, 2, depth_image, np.asarray([math.pi, math.pi]))
+    angles = uniform_filter_with_log_depth_cutoff_angles(angles, log_depth, 2)
     return angles
 
 def angle_calculator(vec):
@@ -200,41 +205,61 @@ def angle_calculator(vec):
     new_vec_1 = tf.multiply(vec, mult_1)
     new_vec_2 = tf.multiply(vec, mult_2)
 
-    angle_1 = tf.acos(tf.math.divide_no_nan(-new_vec_1[2], tf.linalg.norm(new_vec_1))) * tf.sign(new_vec_1[1])
-    angle_2 = tf.acos(tf.math.divide_no_nan(-new_vec_2[2], tf.linalg.norm(new_vec_2))) * -tf.sign(new_vec_2[0])
+    angle_1 = tf.acos(tf.clip_by_value(tf.math.divide_no_nan(-new_vec_1[2], tf.linalg.norm(new_vec_1)), -1, 1)) * tf.sign(new_vec_1[1])
+    angle_2 = tf.acos(tf.clip_by_value(tf.math.divide_no_nan(-new_vec_2[2], tf.linalg.norm(new_vec_2)), -1, 1)) * -tf.sign(new_vec_2[0])
     return tf.stack([angle_1, angle_2], axis=0)
 
 
-def row_wrapper(row):
-    return tf.map_fn(angle_calculator, row)
-
 class Calc_Angles(layers.Layer):
-
     def call(self, input):
         return tf.vectorized_map(lambda x: tf.vectorized_map(angle_calculator, x), input)
+
+class Depth_Cutoff(layers.Layer):
+    def call(self, input, middle):
+        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.subtract(y, y[middle])), 0.03), tf.zeros_like(y), tf.ones_like(y)), x), input)
+
+def uniform_filter_with_depth_cutoff(image, depth_image, window, middle, dimension, vals_per_window):
+    patches = tf.reshape(tf.image.extract_patches(image, window, padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (height, width, vals_per_window, dimension))
+    depth_patches = tf.squeeze(tf.image.extract_patches(depth_image, window, padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), axis=0)
+    mult_values = Depth_Cutoff()(depth_patches, middle)
+    sums = tf.reduce_sum(mult_values, axis=-1, keepdims=True)
+    val_sums = tf.reduce_sum(tf.multiply(tf.expand_dims(mult_values, axis=-1), patches), axis=-2)
+    return tf.math.divide_no_nan(val_sums, sums)
+
+def convert_to_log_depth(depth_image):
+    log_image = tf.math.log(depth_image)
+    min = tf.reduce_min(tf.where(tf.math.is_inf(log_image), np.inf, log_image))
+    max = tf.reduce_max(log_image)
+
+    log_image = log_image - min
+    log_image = tf.math.divide_no_nan(log_image, max-min)
+    log_image = (tf.ones_like(log_image) - log_image) * 0.85 + 0.15
+
+    log_image = tf.where(tf.math.is_inf(log_image), 0.0, log_image)
+    return log_image
 
 def calculate_normals_GPU_model(pool_size=2, height=height, width=width):
     p = pool_size*2+1
 
     depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
+    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
+
+    log_image = tf.expand_dims(convert_to_log_depth(depth_image), axis=-1)
+
+    smoothed_depth = uniform_filter_with_depth_cutoff(depth_image_expanded, log_image, [1, 5, 5, 1], 12, 1, 25)
+    smoothed_log = uniform_filter_with_depth_cutoff(log_image, log_image, [1, 5, 5, 1], 12, 1, 25)
+
     factor_x = layers.Input(shape=(1,), dtype=tf.float32)
     factor_y = layers.Input(shape=(1,), dtype=tf.float32)
 
-    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
-    smoothed = layers.AveragePooling2D(pool_size=(p, p), padding='same', strides=(1, 1))(depth_image_expanded)
-    condition = tf.cast(tf.greater(depth_image_expanded, 0.0001), tf.float32)
-    sums = layers.AveragePooling2D(pool_size=(p, p), padding='same', strides=(1, 1))(condition)
-    smoothed = tf.math.divide_no_nan(smoothed, sums)
-    smoothed = tf.squeeze(smoothed, axis=0)
+    zeros = tf.zeros(tf.shape(smoothed_depth))
+    x_values = tf.multiply(tf.broadcast_to(factor_x, tf.shape(smoothed_depth)), smoothed_depth)
+    y_values = tf.multiply(tf.broadcast_to(factor_y, tf.shape(smoothed_depth)), smoothed_depth)
 
-    zeros = tf.zeros(tf.shape(smoothed))
-    x_values = tf.multiply(tf.broadcast_to(factor_x, tf.shape(smoothed)), smoothed)
-    y_values = tf.multiply(tf.broadcast_to(factor_y, tf.shape(smoothed)), smoothed)
-
-    pad_1 = tf.pad(smoothed, [[2, 0], [0, 0], [0, 0]])
-    pad_2 = tf.pad(smoothed, [[0, 2], [0, 0], [0, 0]])
-    pad_3 = tf.pad(smoothed, [[0, 0], [2, 0], [0, 0]])
-    pad_4 = tf.pad(smoothed, [[0, 0], [0, 2], [0, 0]])
+    pad_1 = tf.pad(smoothed_depth, [[2, 0], [0, 0], [0, 0]])
+    pad_2 = tf.pad(smoothed_depth, [[0, 2], [0, 0], [0, 0]])
+    pad_3 = tf.pad(smoothed_depth, [[0, 0], [2, 0], [0, 0]])
+    pad_4 = tf.pad(smoothed_depth, [[0, 0], [0, 2], [0, 0]])
 
     sub_1 = tf.subtract(pad_1, pad_2)[1:-1, :, :]
     sub_2 = tf.subtract(pad_4, pad_3)[:, 1:-1, :]
@@ -248,23 +273,13 @@ def calculate_normals_GPU_model(pool_size=2, height=height, width=width):
 
     norm = tf.norm(vectors, axis=-1, keepdims=True)
     normals = tf.math.divide_no_nan(vectors, tf.broadcast_to(norm, tf.shape(vectors)))
+
     angles = Calc_Angles()(normals)
-    model = Model(inputs=[depth_image, factor_x, factor_y], outputs=angles)
+    smoothed_angles = uniform_filter_with_depth_cutoff(tf.expand_dims(angles, axis=0), log_image, [1, 5, 5, 1], 12, 2, 25)
+
+    model = Model(inputs=[depth_image, factor_x, factor_y], outputs=[smoothed_log, smoothed_angles])
     return model
 
 def create_normal_calculation_function_GPU():
     model = calculate_normals_GPU_model()
     return lambda image: model.predict([np.asarray([image]), np.asarray([2*factor_x]), np.asarray([2*factor_y])], batch_size=1)
-
-
-def main():
-    image = load_image(110)[0]
-    normals_calculator = create_normal_calculation_function_GPU()
-    t = time.time()
-    normals = normals_calculator(image)
-    print(time.time() - t)
-    normals2 = calculate_normals_as_angles_final(image)
-    plot_normals(normals)
-
-if __name__ == '__main__':
-    main()

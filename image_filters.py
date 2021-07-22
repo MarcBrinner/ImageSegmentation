@@ -20,8 +20,8 @@ def gaussian_filter_with_norm_check(image, size, sigma):
                 continue
             weights = 0
             sum = np.zeros(dim)
-            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
-                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+            for k in range(max(0, i - size), min(height, i + size + 1)):
+                for l in range(max(0, j - size), min(width, j + size + 1)):
                     if np.linalg.norm(image[k][l]) > 0.0001:
                         weight = np.exp(-sigma*((i-k)**2 + (j-l)**2))
                         weights += weight
@@ -43,8 +43,8 @@ def gaussian_filter_with_depth_check(image, size, sigma, depth_image, none_value
                 continue
             weights = 0
             sum = np.zeros(dim)
-            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
-                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+            for k in range(max(0, i - size), min(height, i + size + 1)):
+                for l in range(max(0, j - size), min(width, j + size + 1)):
                     if depth_image[k][l] > 0.0001:
                         weight = np.exp(-sigma * ((i - k) ** 2 + (j - l) ** 2))
                         weights += weight
@@ -64,8 +64,8 @@ def uniform_filter_without_zero(image, size):
         for j in range(shape[1]):
             counter = 0
             sum = 0
-            for k in range(max(0, i-size), min(shape[0]-1, i+size+1)):
-                for l in range(max(0, j-size), min(shape[1]-1, j+size+1)):
+            for k in range(max(0, i-size), min(shape[0], i+size+1)):
+                for l in range(max(0, j-size), min(shape[1], j+size+1)):
                     if image[k][l] > 0.001:
                         counter += 1
                         sum += image[k][l]
@@ -90,8 +90,8 @@ def gaussian_filter_with_depth_factor(depth_image, size, sigma=None):
             sum = 0
             distance_factor_x = d * factor_x
             distance_factor_y = d * factor_y
-            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
-                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+            for k in range(max(0, i - size), min(height, i + size + 1)):
+                for l in range(max(0, j - size), min(width, j + size + 1)):
                     if depth_image[k][l] > 0.00001 and (k != i or j != l):
                         percentage = abs(k-i)/(abs(k-i) + abs(l-j))
                         depth_normalizer = percentage * distance_factor_y + (1-percentage) * distance_factor_x
@@ -121,8 +121,8 @@ def gaussian_filter_with_log_depth_cutoff(depth_image, log_depth, size, sigma):
             weights = 0
             sum = 0
             current_log_depth = log_depth[i][j]
-            for k in range(max(0, i - size), min(height - 1, i + size + 1)):
-                for l in range(max(0, j - size), min(width - 1, j + size + 1)):
+            for k in range(max(0, i - size), min(height, i + size + 1)):
+                for l in range(max(0, j - size), min(width, j + size + 1)):
                     if depth_image[k][l] > 0.0001 and abs(log_depth[k][l] - current_log_depth) < 0.02:
                         weight = np.exp(-sigma * ((i - k) ** 2 + (j - l) ** 2))
                         weights += weight
@@ -132,4 +132,52 @@ def gaussian_filter_with_log_depth_cutoff(depth_image, log_depth, size, sigma):
                 new_image[i][j] = sum
             else:
                 new_image[i][j] = 0
+    return new_image
+
+
+@njit()
+def uniform_filter_with_log_depth_cutoff_angles(image, log_depth, size):
+    height, width = np.shape(image)[0], np.shape(image)[1]
+    new_image = np.zeros(np.shape(image))
+    initial_val = np.asarray([0.0, 0.0])
+    zero_val = np.asarray([math.pi, math.pi])
+    for i in range(height):
+        for j in range(width):
+            if log_depth[i][j] < 0.0001:
+                new_image[i][j] = zero_val
+                continue
+            weight = 0
+            sum = initial_val.copy()
+
+            current_log_depth = log_depth[i][j]
+            for k in range(max(0, i - size), min(height, i + size + 1)):
+                for l in range(max(0, j - size), min(width, j + size + 1)):
+                    if log_depth[k][l] > 0.0001 and abs(log_depth[k][l] - current_log_depth) < 0.03:
+                        weight += 1
+                        sum += image[k][l]
+            sum = sum / weight
+            new_image[i][j] = sum
+    return new_image
+
+@njit()
+def uniform_filter_with_log_depth_cutoff_depth(image, log_depth, size):
+    height, width = np.shape(image)[0], np.shape(image)[1]
+    new_image = np.zeros(np.shape(image))
+    for i in range(height):
+        for j in range(width):
+            if log_depth[i][j] < 0.0001:
+                new_image[i][j] = 0
+                continue
+            weight = 0
+            sum = 0
+
+            current_log_depth = log_depth[i][j]
+            for k in range(max(0, i - size), min(height, i + size + 1)):
+                for l in range(max(0, j - size), min(width, j + size + 1)):
+                    if log_depth[k][l] > 0.0001 and abs(log_depth[k][l] - current_log_depth) < 0.03:
+                        weight += 1
+                        sum += image[k][l]
+            sum = sum / weight
+            new_image[i][j] = sum
+
     return new_image
