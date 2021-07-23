@@ -1,23 +1,53 @@
-import numpy as np
-import seaborn as sns
 import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
 import time
-import find_edges
-import multiprocessing
+import plot_image
+import standard_values
+from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
 from mean_field_update_tf import *
 from calculate_normals import *
-from plot_image import *
-from collections import Counter
 from numba import njit, prange
 from load_images import *
-from image_operations import convert_depth_image, rgb_to_Lab, calculate_curvature_scores_2
-from sklearn.cluster import MeanShift
-from sklearn.cluster import KMeans
-from sklearn.cluster import DBSCAN
+from image_operations import convert_depth_image
 from skimage import measure
 
 train_indices = [109, 108, 107, 105, 104, 103, 102, 101, 100]
 test_indices = [110, 106]
+
+def find_edges_model_GPU(depth=4, factor_array=None, threshold=0.098046811455665408):
+    if factor_array is None:
+        factor_array = [standard_values.factor_y, standard_values.factor_x]
+
+    depth_image_in = layers.Input(shape=(480, 640), batch_size=1)
+    depth_image = tf.squeeze(depth_image_in, axis=0)
+
+    shape = (tf.shape(depth_image)[0] - 2*depth, tf.shape(depth_image)[1] - 2*depth)
+
+    curvature_scores = tf.zeros(shape)
+    factors = tf.broadcast_to(tf.reshape(tf.constant(factor_array, dtype=tf.float32), (1, 1, 2)), (shape[0], shape[1], 2))
+    central_points = tf.concat([tf.zeros((shape[0], shape[1], 2)), tf.expand_dims(depth_image[depth:-depth, depth:-depth], axis=-1)], axis=-1)
+
+    for direction in [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]:
+        d = tf.reshape(tf.constant(direction, dtype=tf.float32), (1, 1, 2))
+
+        current_scores = tf.zeros_like(curvature_scores)
+        prev_distances = tf.zeros_like(curvature_scores)
+        prev_points = central_points
+        for k in range(1, depth):
+            new_points = tf.concat([factors*k*d, tf.expand_dims(depth_image[depth-k*direction[0]: -(depth+k*direction[0]), depth-k*direction[1]: -(depth+k*direction[1])], axis=-1)], axis=-1)
+            dif_1 = tf.sqrt(tf.reduce_sum(tf.square(new_points - prev_points), axis=-1))
+            dif_2 = tf.sqrt(tf.reduce_sum(tf.square(new_points - central_points), axis=-1))
+            score = tf.math.divide_no_nan((dif_1 + prev_distances), dif_2) - 1
+            current_scores = current_scores + score
+            curvature_scores = curvature_scores + current_scores
+            prev_distances = dif_2
+            prev_points = new_points
+
+    pixels = tf.cast(tf.less(curvature_scores, threshold), tf.int32)
+
+    model = Model(inputs=[depth_image_in], outputs=pixels)
+    return model
 
 @njit()
 def extract_data_points(depth_image, normal_image):
@@ -120,7 +150,7 @@ def test_model_on_image(image_index, load_index=-1, load_iteration=0, kernel_siz
     height, width = np.shape(depth_image)
     log_depth = convert_depth_image(depth_image)
     surfaces = find_smooth_surfaces_with_curvature_scores(depth_image)
-    features = extract_features_conv(log_depth, rgb_image)
+    features = extract_features_conv(log_depth, rgb_image, log_depth)
     number_of_surfaces = int(np.max(surfaces) + 1)
     unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities_conv(surfaces, number_of_surfaces)
     if load_iteration >= 1:
@@ -173,7 +203,7 @@ def smooth_surface_calculations(depth_image):
 
             for i in range(len(positions)):
                 if np.max(np.abs(np.asarray([curvature_scores[p[0]][p[1]] for p in [positions[i], positions[i-1], positions[i-2], positions[i-3]]]))) < 0 or \
-                    np.sum(curvature_scores) < threshold*32:
+                    np.sum(curvature_scores) < threshold*14:
                     plane_image[y][x] = 1
     return plane_image
 
@@ -260,8 +290,8 @@ def get_unary_potentials_and_initial_probabilities_conv(surface_image, number_of
     return unary_potentials, initial_probabilities
 
 @njit()
-def extract_features_conv(depth_image, lab_image):
-    angle_image = calculate_normals_as_angles_final(depth_image)
+def extract_features_conv(depth_image, lab_image, log_depth):
+    angle_image = calculate_normals_as_angles_final(depth_image, log_depth)
     height, width = np.shape(depth_image)
     features_1 = np.zeros((height, width, 3))
     features_2 = np.zeros((height, width, 6))
@@ -286,7 +316,11 @@ def plot_surfaces(Q, max=True):
 def find_smooth_surfaces_with_curvature_scores(depth_image):
     depth_image = gaussian_filter_with_depth_factor(depth_image, 4)
     print("Filter applied.")
+
     surfaces = smooth_surface_calculations(depth_image)
+    #surface_model = find_edges_model_GPU(4)
+    #surfaces = surface_model.predict(np.asarray([depth_image]))
+    #surfaces = np.pad(surfaces, [[4, 4], [4, 4]])
     print("Surface patches found.")
     surfaces = do_iteration_2(surfaces, 11, 2)
     surfaces = do_iteration_2(surfaces, 5, 1)
@@ -296,11 +330,20 @@ def find_smooth_surfaces_with_curvature_scores(depth_image):
     remove_small_patches(indexed_surfaces, surfaces, segment_count)
     print("Image cleaning done.")
     #colored_image = color_patches(indexed_surfaces)
-    #plot_surfaces(indexed_surfaces, False)
+    plot_surfaces(indexed_surfaces, False)
     return indexed_surfaces
 
 if __name__ == '__main__':
-    train_model_on_images(train_indices)
+    # image = load_image(110)
+    # model = find_edges_model_GPU(4)
+    # out = model.predict(np.asarray([image[0]]))
+    # t = time.time()
+    # out = model.predict(np.asarray([image[0]]))
+    # print(time.time()-t)
+    # plot_image.plot_array_PLT(out)
+    # print()
+    # quit()
+    #train_model_on_images(train_indices)
     test_model_on_image(test_indices[0])
     quit()
 
