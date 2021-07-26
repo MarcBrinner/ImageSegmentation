@@ -6,7 +6,7 @@ from tensorflow.keras import layers, Model
 from scipy.spatial.transform import Rotation
 from numba import njit
 from load_images import *
-from find_planes_MS import plot_surfaces
+from find_planes import plot_surfaces
 
 @njit()
 def determine_neighbors(index_image, segment_count):

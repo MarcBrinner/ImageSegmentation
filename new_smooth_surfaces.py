@@ -1,5 +1,5 @@
 import hdbscan
-from find_planes_MS import *
+from find_planes import *
 from sklearn.cluster import DBSCAN
 
 def create_datasets(normals, surfaces, number_of_surfaces):

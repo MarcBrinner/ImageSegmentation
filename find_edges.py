@@ -16,7 +16,7 @@ def find_edges_from_depth_image(image):
             depth_factor_x = factor_x * d
             depth_factor_y = factor_y * d
             alpha = 6
-            if np.max(np.abs(np.asarray([image[i-1][j], image[i+1][j]]) - d)) > depth_factor_y*alpha or\
+            if np.max(np.abs(np.asarray([image[i-1][j], image[i+1][j]]) - d)) > depth_factor_y * alpha or\
                 np.max(np.abs(np.asarray([image[i][j+1], image[i][j-1]]) - d)) > depth_factor_x * alpha:
                 edge_image[i][j] = 1
     return edge_image
@@ -91,25 +91,3 @@ def find_edges_from_normal_image_3(image, depth_image, alpha=0.85):
             if sum < alpha:
                 edge_image[i][j] = 1.0
     return edge_image
-
-def find_normal_vector_edges_like_paper(depth_image):
-    #median_filtered_image = median_filter(depth_image, 3)
-    normals = calculate_normal_vectors_like_paper(depth_image)
-    #plot_image = np.asarray(normals * 127.5 + 127.5, dtype="uint8")
-    #plot_array(plot_image)
-    #normals = gaussian_filter(normals, 2, 0.5)
-    #plot_image = np.asarray(normals * 127.5 + 127.5, dtype="uint8")
-    #plot_array(plot_image)
-    edges = find_edges_from_normal_image_3(normals, depth_image, alpha=0.89)
-    #for i in range(5):
-    #    edges = do_iteration(edges, 5)
-    plot_image = np.asarray(edges * 255, dtype="uint8")
-    plot_array(plot_image)
-    return edges
-
-def main():
-    images = load_image(110)
-    find_normal_vector_edges_like_paper(images[0])
-
-if __name__ == '__main__':
-    main()
