@@ -103,7 +103,7 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
-    div_x, div_y = 4, 4
+    div_x, div_y = 40, 40
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -111,6 +111,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
     surface_model = find_surfaces_model_GPU()
     conv_crf_model = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x)
 
+    results = []
     for index in image_indices:
         t = time.time()
         depth_image, rgb_image, annotation = load_image(index)
@@ -131,6 +132,9 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
         print(time.time()-t)
         plot_surfaces(Q)
+        results.append(Q)
+        return Q, depth_image, angles
+    return results
 
 @njit()
 def get_unary_potentials_and_initial_probabilities(surface_image, number_of_labels):
