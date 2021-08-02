@@ -1,20 +1,13 @@
 import numpy as np
 import math
+from skimage import color
 from PIL import ImageCms, Image
 from numba import njit
 
 neighborhood_value = 7
 
 def rgb_to_Lab(image):
-    image = Image.fromarray(image)
-
-    srgb_profile = ImageCms.createProfile("sRGB")
-    lab_profile = ImageCms.createProfile("LAB")
-
-    rgb2lab_transform = ImageCms.buildTransformFromOpenProfiles(srgb_profile, lab_profile, "RGB", "LAB")
-    lab_im = np.asarray(ImageCms.applyTransform(image, rgb2lab_transform))
-
-    return lab_im
+    return color.rgb2lab(image)
 
 def convert_depth_image(image):
     new_image = np.log10(image, where=image != 0)
