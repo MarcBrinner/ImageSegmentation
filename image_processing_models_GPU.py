@@ -19,7 +19,7 @@ def save_parameters(model, index):
 
 def load_parameters(index):
     if index < 0:
-        return list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 40600.0, 1 / 100, 40600.0, 1 / 200, 1 / 100, 40600.0, 20.0, 0.01], (12, 1, 1)))
+        return list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 4000.0, 1 / 100, 4000.0, 1 / 200, 1 / 100, 4000.0, 20.0, 0.01], (12, 1, 1)))
     return list(np.reshape(np.load(f"parameters/{index}.npy"), (12, 1, 1)))
 
 class Variable(layers.Layer):
@@ -459,7 +459,7 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     angles = Calc_Angles()(normals)
     smoothed_angles = uniform_filter_with_depth_cutoff(tf.expand_dims(angles, axis=0), log_image, [1, p, p, 1], int((p**2-1)/2), 2, p**2)
 
-    model = Model(inputs=[depth_image, factor_x_in, factor_y_in], outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles])
+    model = Model(inputs=[depth_image, factor_x_in, factor_y_in], outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals])
     return lambda image: model.predict([np.asarray([image]), np.asarray([2*factor_x]), np.asarray([2*factor_y])], batch_size=1)
 
 
@@ -526,3 +526,23 @@ def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675
     model = Model(inputs=[depth_image], outputs=[pixels])
 
     return lambda x: model.predict(x, batch_size=height)
+
+def nearest_point_calculations(input):
+    surface_points = tf.expand_dims(input[0].to_tensor(), axis=0)
+    border_centers = tf.expand_dims(input[1].to_tensor(), axis=1)
+    dif = tf.math.reduce_euclidean_norm(tf.subtract(surface_points, border_centers), axis=-1)
+    min = tf.argmin(dif, axis=1)
+    return tf.RaggedTensor.from_tensor(tf.squeeze(tf.gather(surface_points, min, axis=1), axis=0))
+
+def nearest_point_wrapper(surface_points, border_centers):
+    #return nearest_point_calculations((surface_points[10], border_centers[10]))
+    return tf.map_fn(nearest_point_calculations, (surface_points, border_centers), fn_output_signature=tf.RaggedTensorSpec(shape=(None, 2)))
+
+def calculate_nearest_point_init(surface_points, border_centers, func):
+    surface_points_tensor = tf.ragged.constant(surface_points, dtype=tf.float32)
+    border_centers_tensor = tf.ragged.constant(border_centers, dtype=tf.float32)
+    return func(surface_points_tensor, border_centers_tensor)
+
+def calculate_nearest_point_function():
+    func = tf.function(nearest_point_wrapper)
+    return lambda x, y: calculate_nearest_point_init(x, y, func)

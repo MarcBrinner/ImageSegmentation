@@ -86,9 +86,9 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
             print(f"Training on image {image_index}")
 
             depth_image, rgb_image, annotation = load_image(image_index)
-            log_depth, angles = normals_and_log_depth(depth_image)
+            log_depth, normal_angles, normal_vectors = normals_and_log_depth(depth_image)
 
-            features, grid = extract_features(log_depth, rgb_image, angles)
+            features, grid = extract_features(log_depth, rgb_image, normal_angles)
             smoothed_depth = smoothing_model(depth_image, grid)
 
             surfaces = surface_model(smoothed_depth)
@@ -103,6 +103,12 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
 
             conv_crf_model.fit(X, Y, batch_size=1)
 
+            out = conv_crf_model.predict(X, batch_size=1)
+            Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+            Q[depth_image == 0] = 0
+            X = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
+            conv_crf_model.fit(X, Y, batch_size=1)
+
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
@@ -113,13 +119,12 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
     normals_and_log_depth = normals_and_log_depth_model_GPU()
     surface_model = find_surfaces_model_GPU()
     conv_crf_model = conv_crf_depth(*load_parameters(load_index), kernel_size, size_y, size_x)
-    conv_crf_model_2 = conv_crf_depth(*load_parameters(load_index), 5, size_y, size_x)
     print(*load_parameters(load_index))
     results = []
     for index in image_indices:
         t = time.time()
         depth_image, rgb_image, annotation = load_image(index)
-        log_depth, angles = normals_and_log_depth(depth_image)
+        log_depth, angles, vectors = normals_and_log_depth(depth_image)
 
         features, grid = extract_features(log_depth, rgb_image, angles)
         smoothed_depth = smoothing_model(depth_image, grid)
@@ -132,21 +137,26 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         data = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y)
         out = conv_crf_model.predict(data, batch_size=1)
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+        Q[depth_image == 0] = 0
 
-        # data = get_inputs(features, unary_potentials, Q, 5, div_x, div_y, size_x, size_y)
-        # out = conv_crf_model_2.predict(data, batch_size=1)
-        # Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+        data = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
+        out = conv_crf_model.predict(data, batch_size=1)
+        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+        Q[depth_image == 0] = 0
 
         # data = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
         # out = conv_crf_model.predict(data, batch_size=1)
         # Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
 
         print(time.time()-t)
+        plot_image.plot_array(depth_image)
         plot_surfaces(Q)
         results.append(Q)
         np.save("Q.npy", Q)
         np.save("depth.npy", depth_image)
         np.save("angles.npy", angles)
+        np.save("vectors.npy", vectors )
+        np.save("patches.npy", surfaces)
         #return Q, depth_image, angles
     return results
 
@@ -190,6 +200,6 @@ def plot_surfaces(Q, max=True):
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image(test_indices, load_index=-1)
+    test_model_on_image(test_indices, load_index=2)
     quit()
 
