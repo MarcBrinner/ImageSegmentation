@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 
+import find_edges
 import plot_image
 import standard_values
 from image_processing_models_GPU import *
@@ -112,7 +113,7 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
-    div_x, div_y = 40, 40
+    div_x, div_y = 4, 4
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -130,7 +131,6 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         smoothed_depth = smoothing_model(depth_image, grid)
 
         surfaces = surface_model(smoothed_depth)
-
         number_of_surfaces = int(np.max(surfaces) + 1)
         unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
 
@@ -144,19 +144,19 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
         Q[depth_image == 0] = 0
 
-        # data = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
-        # out = conv_crf_model.predict(data, batch_size=1)
-        # Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+        data = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
+        out = conv_crf_model.predict(data, batch_size=1)
+        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
+        Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        plot_image.plot_array(depth_image)
         plot_surfaces(Q)
         results.append(Q)
-        np.save("Q.npy", Q)
-        np.save("depth.npy", depth_image)
-        np.save("angles.npy", angles)
-        np.save("vectors.npy", vectors )
-        np.save("patches.npy", surfaces)
+        np.save("out/Q.npy", Q)
+        np.save("out/depth.npy", depth_image)
+        np.save("out/angles.npy", angles)
+        np.save("out/vectors.npy", vectors )
+        np.save("out/patches.npy", surfaces)
         #return Q, depth_image, angles
     return results
 

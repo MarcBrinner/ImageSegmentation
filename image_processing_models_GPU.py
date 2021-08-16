@@ -19,7 +19,7 @@ def save_parameters(model, index):
 
 def load_parameters(index):
     if index < 0:
-        return list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 4000.0, 1 / 100, 4000.0, 1 / 200, 1 / 100, 4000.0, 20.0, 0.01], (12, 1, 1)))
+        return list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 40000.0, 1 / 100, 40000.0, 1 / 200, 1 / 100, 40000.0, 20.0, 0.01], (12, 1, 1)))
     return list(np.reshape(np.load(f"parameters/{index}.npy"), (12, 1, 1)))
 
 class Variable(layers.Layer):
@@ -546,3 +546,10 @@ def calculate_nearest_point_init(surface_points, border_centers, func):
 def calculate_nearest_point_function():
     func = tf.function(nearest_point_wrapper)
     return lambda x, y: calculate_nearest_point_init(x, y, func)
+
+def extract_features_function():
+    resnet = tf.keras.applications.resnet50.ResNet50(include_top=False, weights='imagenet', input_shape=(480, 640, 3))
+    resnet.summary()
+    model = Model(inputs=resnet.inputs, outputs=resnet.layers[38].output)
+    model.summary()
+    return lambda x: model(np.expand_dims(x, axis=0))

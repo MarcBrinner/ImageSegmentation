@@ -5,6 +5,7 @@ import find_edges
 import find_planes
 import plot_image
 import time
+import matplotlib.pyplot as plt
 from standard_values import *
 from image_operations import rgb_to_Lab
 from tensorflow.keras import layers, Model
@@ -12,7 +13,53 @@ from scipy.spatial.transform import Rotation
 from numba import njit
 from load_images import *
 from find_planes import plot_surfaces
-from image_processing_models_GPU import calculate_nearest_point_function
+from image_processing_models_GPU import calculate_nearest_point_function, extract_features_function
+from sklearn.cluster import KMeans
+
+
+train_indices = [109, 108, 107, 105, 104, 103, 102, 101, 100, 99, 98, 97, 96, 95, 94]
+number_of_prototypes = 50
+
+def train_k_means_for_texture_vectors():
+    texture_model = extract_features_function()
+    vectors = []
+    for index in train_indices:
+        print(index)
+        _, rgb, _ = load_image(index)
+        vectors.append(np.reshape(texture_model(rgb), (19200, 256)))
+    vectors = np.vstack(vectors)
+    k_means = KMeans(n_clusters=number_of_prototypes, verbose=1)
+    k_means.fit(vectors)
+    np.save("cluster_centers.npy", k_means.cluster_centers_)
+    prediction = k_means.predict(vectors[:19200])
+    prediction = np.reshape(prediction, (120, 160))
+    plt.imshow(prediction, cmap='nipy_spectral')
+    plt.show()
+
+def test_clusters():
+    centers = np.load("cluster_centers.npy")
+    k_means = KMeans(n_clusters=number_of_prototypes, n_init=1, max_iter=1)
+    _, rgb, _ = load_image(110)
+    texture_model = extract_features_function()
+    vec = np.reshape(texture_model(rgb), (19200, 256))
+    k_means.fit(vec)
+    k_means.cluster_centers_ = centers
+    prediction = k_means.predict(vec)
+    print(np.shape(prediction))
+    prediction = np.reshape(prediction, (120, 160))
+    plt.imshow(prediction, cmap='nipy_spectral')
+    plt.show()
+
+def texture_image(rgb):
+    centers = np.load("cluster_centers.npy")
+    texture_model = extract_features_function()
+    k_means = KMeans(n_clusters=number_of_prototypes, n_init=1, max_iter=1)
+    vec = np.reshape(texture_model(rgb), (19200, 256))
+    k_means.fit(vec)
+    k_means.cluster_centers_ = centers
+    prediction = k_means.predict(vec)
+    prediction = np.reshape(prediction, (120, 160))
+    return prediction
 
 @njit()
 def determine_neighbors_with_border_centers_calc(surfaces, number_of_surfaces, depth_edges):
@@ -89,25 +136,6 @@ def prepare_border_centers(neighbors, border_centers):
             current_list.append([0, 0])
         result.append(current_list)
     return result
-
-def prepare_occlusion_closest_point_inputs(occlusion_candidates, centroids, number_of_surfaces, points):
-    list = []
-    for i in range(number_of_surfaces):
-        list.append([])
-    for i_1, i_2 in occlusion_candidates:
-        list[i_1].append(centroids[i_2])
-        list[i_2].append(centroids[i_1])
-    i = 0
-    index = -1
-    missing = []
-    while i < len(list):
-        index += 1
-        if len(list[i]) == 0:
-            del list[i]
-            missing.append(index)
-            continue
-        i += 1
-    return list, missing
 
 @njit()
 def determine_neighbors(surfaces, number_of_surfaces, depth_edges):
@@ -201,20 +229,19 @@ def determine_centroid(depth_image, positions):
         centroids.append([point[0], point[1], depth_image[point[1]][point[0]]])
     return np.asarray(centroids)
 
-def determine_convexity(normals, centroids, neighbors, number_of_surfaces):
-    convexity = np.zeros((number_of_surfaces, number_of_surfaces))
-    for i in range(number_of_surfaces):
-        for j in range(i+1, number_of_surfaces):
-            if j not in neighbors[i]:
-                convexity[i][j] = 0
-                continue
-            diff = centroids[i] - centroids[j]
-            v1 = np.dot(diff, normals[i])
-            v2 = np.dot(diff, normals[j])
-            if v1 - v2 > 0:
-                convexity[i][j] = 1
-                convexity[j][i] = 1
-    return convexity
+def determine_average_position(positions):
+    for i in range(len(positions)):
+        del positions[i][0]
+    positions = [np.asarray(p) for p in positions]
+    sums = [np.sum(p, axis=0) for p in positions]
+    sums = sums / np.asarray([[len(p), len(p)] for p in positions])
+    centroids = []
+    for i in range(len(positions)):
+        if np.any(np.isnan(sums[i])):
+            centroids.append([-1, -1])
+        else:
+            centroids.append(sums[i])
+    return np.asarray(centroids)
 
 def swap_values(vec):
     return np.asarray([vec[1], vec[0], vec[2]])
@@ -257,53 +284,58 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
             if convex:
                 convexity[i][surface_2] = 1
                 convexity[surface_2][i] = 1
-                direction = c_2 - c_1
-                length = np.max(np.abs(direction))
-                direction = direction / max(length, 1)
-                for m in range(length + 1):
-                    point = c_1 + m * direction
-                    surfaces[int(point[1])][int(point[0])] = 70
+                # direction = c_2 - c_1
+                # length = np.max(np.abs(direction))
+                # direction = direction / max(length, 1)
+                # for m in range(length + 1):
+                #     point = c_1 + m * direction
+                #     surfaces[int(point[1])][int(point[0])] = 70
 
     join_matrix = join_matrix + convexity
     join_matrix[join_matrix > 1] = 1
     return join_matrix
 
-def determine_color_similar_neighbors(color_similarities, neighbors, join_matrix, number_of_surfaces):
+def determine_similar_patches(texture_similarities, color_similarities, normal_similarities, threshold_1, threshold_2, threshold_3, neighbors):
+    similar_patches_1 = np.zeros_like(texture_similarities)
+    similar_patches_1[texture_similarities < threshold_1] = 1
+    similar_patches_1[color_similarities > threshold_2] = 0
+
+    similar_patches_2 = similar_patches_1.copy()
+    similar_patches_2[normal_similarities > threshold_3] = 0
+
+    for i in range(np.shape(texture_similarities)[0]):
+        similar_patches_2[i][i] = 0
+        for n in neighbors[i]:
+            similar_patches_2[i][n] = 0
+
+    return similar_patches_1, similar_patches_2
+
+def join_similar_neighbors(similar_patches, neighbors, join_matrix, number_of_surfaces):
     similar_neighbors = np.zeros((number_of_surfaces, number_of_surfaces))
-    threshold = 0.6
     for s_1 in range(number_of_surfaces):
         for s_2 in range(s_1 + 1, number_of_surfaces):
             if s_2 in neighbors[s_1]:
-                if color_similarities[s_1][s_2] < threshold:
+                if similar_patches[s_1][s_2] == 1:
                     similar_neighbors[s_1][s_2] = 1
                     similar_neighbors[s_2][s_1] = 1
 
     join_matrix = join_matrix + similar_neighbors
     join_matrix[join_matrix > 1] = 1
-
-def determine_occlusion_candidates(surface_similarities, number_of_surfaces, neighbors):
-    pairs = []
-    threshold = 0.5
-    for i_1 in range(number_of_surfaces):
-        for i_2 in range(i_1 + 1, number_of_surfaces):
-            if i_2 not in neighbors[i_1]:
-                if surface_similarities[i_1][i_2] < threshold:
-                    pairs.append((i_1, i_2))
-    return pairs
+    return join_matrix
 
 def join_surfaces(join_matrix, surfaces, number_of_surfaces):
     labels = np.arange(number_of_surfaces)
-    print(labels)
     for i in range(number_of_surfaces):
         for j in range(i + 1, number_of_surfaces):
             if join_matrix[i][j] == 1:
-                surfaces[surfaces == j] = labels[i]
+                surfaces[surfaces == labels[j]] = labels[i]
                 labels[j] = labels[i]
     return surfaces
 
-def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfaces, pixels_per_surface):
+def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfaces, pixels_per_surface, texture_image):
     histograms_color = np.zeros((256, 256, number_of_surfaces))
     histograms_angles = np.zeros((40, 40, number_of_surfaces))
+    histograms_texture = np.zeros((number_of_prototypes, number_of_surfaces))
     normalized_angles = np.asarray((angle_image / (2*np.pi) + 0.5) * 39, dtype="uint8")
     inverse_pixels = 1 / pixels_per_surface * 10
     height, width = np.shape(surfaces)
@@ -320,7 +352,15 @@ def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfa
             histograms_angles[a_1][a_2][s] += inverse_pixels[s]
             histograms_color[int(a)][int(b)][s] += inverse_pixels[s]
 
-    return histograms_color, histograms_angles
+            if y % 4 == 0 and x % 4 == 0:
+                new_x = int(x/4)
+                new_y = int(y/4)
+                texture = texture_image[new_y][new_x]
+                histograms_texture[texture][s] += 1
+
+    histograms_texture = histograms_texture/np.sum(histograms_texture, axis=0, keepdims=True) * 10
+    histograms_texture[np.isnan(histograms_texture)] = 0
+    return histograms_color, histograms_angles, histograms_texture
 
 def chi_squared_distances_model(pool_size=(5, 5), strides=(2, 2)):
     input = layers.Input(shape=(None, None, None))
@@ -332,7 +372,19 @@ def chi_squared_distances_model(pool_size=(5, 5), strides=(2, 2)):
     squared_difference = tf.square(tf.subtract(expansion_1, expansion_2))
     addition = tf.add(expansion_1, expansion_2)
     distance = tf.reduce_sum(tf.reduce_sum(tf.math.divide_no_nan(squared_difference, addition), axis=-1), axis=-1)
-    model = Model(inputs=[input], outputs=distance)
+    model = Model(inputs=[input], outputs=distance[0])
+    return lambda histogram: model.predict(np.asarray([histogram]))
+
+def chi_squared_distances_model_1D():
+    input = layers.Input(shape=(None, None))
+    number_of_surfaces = tf.shape(input)[-1]
+    transpose = tf.transpose(input, (0, 2, 1))
+    expansion_1 = tf.repeat(tf.expand_dims(transpose, axis=1), repeats=[number_of_surfaces], axis=1)
+    expansion_2 = tf.repeat(tf.expand_dims(transpose, axis=2), repeats=[number_of_surfaces], axis=2)
+    squared_difference = tf.square(tf.subtract(expansion_1, expansion_2))
+    addition = tf.add(expansion_1, expansion_2)
+    distance = tf.reduce_sum(tf.math.divide_no_nan(squared_difference, addition), axis=-1)
+    model = Model(inputs=[input], outputs=distance[0])
     return lambda histogram: model.predict(np.asarray([histogram]))
 
 def determine_occlusion(number_of_surfaces, centroids, depth_image, surfaces):
@@ -409,29 +461,96 @@ def determine_occlusion(number_of_surfaces, centroids, depth_image, surfaces):
         break
     return surfaces
 
+def determine_occlusion_line_points(similarities, number_of_surfaces, centroids, surface_points):
+    centroid_inputs = []
+    points_inputs = []
+
+    for i in range(number_of_surfaces):
+        current_list = []
+        for j in range(number_of_surfaces):
+            if similarities[i][j] > 0:
+                current_list.append(centroids[j])
+        if len(current_list) > 0:
+            points_inputs.append(surface_points[i])
+            centroid_inputs.append(current_list)
+
+    return points_inputs, centroid_inputs
+
+def color_nearest_points(candidates, closest_points, surfaces, number_of_surfaces):
+    closest_points_array = np.zeros((number_of_surfaces, number_of_surfaces, 2))
+
+    number_of_neighbors = np.sum(candidates, axis=1)
+
+    index_1 = 0
+    for i in range(number_of_surfaces):
+        if number_of_neighbors[i] == 0:
+            continue
+        index_2 = 0
+        for j in range(number_of_surfaces):
+            if candidates[i][j] == 0:
+                continue
+            closest_points_array[i][j] = closest_points[index_1][index_2]
+            index_2 += 1
+        index_1 += 1
+
+    for i in range(number_of_surfaces):
+        for j in range(i+1, number_of_surfaces):
+            if candidates[i][j] == 0:
+                continue
+            p_1 = closest_points_array[i][j]
+            p_2 = closest_points_array[j][i]
+
+            direction = p_2 - p_1
+            length = np.max(np.abs(direction))
+            direction = direction / max(length, 1)
+            for m in range(int(length + 1)):
+                point = p_1 + m * direction
+                surfaces[int(point[1])][int(point[0])] = 70
+    return surfaces
+
 def assemble_surfaces(surfaces, normal_angles, normal_vectors, rgb_image, lab_image, depth_image, number_of_surfaces, patches):
     color_similarity_model = chi_squared_distances_model((8, 8), (4, 4))
     angle_similarity_model = chi_squared_distances_model((4, 4))
+    texture_similarity_model = chi_squared_distances_model_1D()
+    #plot_surfaces(surfaces, False)
 
-    #average_normals, positions, counts_without_edges, counts = calc_average_normal_and_position_and_counts(angles, surfaces, number_of_surfaces)
+    average_normals, positions, counts_without_edges, counts = calc_average_normal_and_position_and_counts(normal_angles, surfaces, number_of_surfaces)
+    texture = texture_image(rgb_image)
+    histogram_color, histogram_angles, histogram_texture = color_and_angle_histograms(lab_image, normal_angles, surfaces, number_of_surfaces, counts, texture)
+    color_similarities = color_similarity_model(histogram_color)
+    angle_similarities = angle_similarity_model(histogram_angles)
 
-    #histogram_color, histogram_angles = color_and_angle_histograms(lab_image, angles, surfaces, number_of_surfaces, counts)
-    #color_similarities = color_similarity_model(histogram_color)
-    #angle_similarities = angle_similarity_model(histogram_angles)
+    texture_similarities = texture_similarity_model(histogram_texture)
 
     depth_edges = find_edges.find_edges_from_depth_image(depth_image)
-    new_surfaces = surfaces.copy() * (np.ones_like(depth_edges) - depth_edges)
+
+    #new_surfaces = surfaces.copy() * (np.ones_like(depth_edges) - depth_edges)
     #plot_surfaces(new_surfaces, False)
     neighbors, border_centers = determine_neighbors_with_border_centers(surfaces, number_of_surfaces, depth_edges)
     surface_patch_points = extract_points(patches, number_of_surfaces)
 
+    similar_patches_1, similar_patches_2 = determine_similar_patches(texture_similarities, color_similarities, angle_similarities, 9, 0.6, 1, neighbors)
+    join_matrix = join_similar_neighbors(similar_patches_1, neighbors, np.zeros((number_of_surfaces, number_of_surfaces)), number_of_surfaces)
+
+
+    #join_matrix = determine_similar_neighbors(color_similarities, neighbors, np.zeros((number_of_surfaces, number_of_surfaces)), number_of_surfaces, 0.6)
     nearest_points_func = calculate_nearest_point_function()
     nearest_points = nearest_points_func(surface_patch_points, prepare_border_centers(neighbors, border_centers))
     #nearest_points = [print(p) for p in nearest_points]
     #quit()
     nearest_points = [np.asarray(p.numpy(), dtype="int32") for p in nearest_points]
-    convexity, surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, number_of_surfaces, surfaces, depth_image)
-    print(nearest_points)
+    join_matrix = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, number_of_surfaces, surfaces, depth_image, join_matrix)
+
+    input = determine_occlusion_line_points(similar_patches_2, number_of_surfaces, determine_average_position(positions), surface_patch_points)
+    nearest_points_for_occlusion = nearest_points_func(*input)
+    nearest_points_for_occlusion = [np.asarray(p.numpy(), dtype="int32") for p in nearest_points_for_occlusion]
+
+    surfaces = color_nearest_points(similar_patches_2, nearest_points_for_occlusion, surfaces, number_of_surfaces)
+
+    plot_surfaces(surfaces, False)
+    quit()
+
+    surfaces = join_surfaces(join_matrix, surfaces, number_of_surfaces)
     plot_surfaces(surfaces, False)
     quit()
     #centroids = determine_centroid(depth_image, positions)
@@ -449,11 +568,11 @@ def main():
     #Q, depth_image, angles = find_planes.test_model_on_image([110])
     depth, rgb, annotation = load_image(110)
     lab = rgb_to_Lab(rgb)
-    Q = np.load("Q.npy")
-    depth_image = np.load("depth.npy")
-    angles = np.load("angles.npy")
-    patches = np.load("patches.npy")
-    vectors = np.load("vectors.npy")
+    Q = np.load("out/Q.npy")
+    depth_image = np.load("out/depth.npy")
+    angles = np.load("out/angles.npy")
+    patches = np.load("out/patches.npy")
+    vectors = np.load("out/vectors.npy")
     Q = np.argmax(Q, axis=-1)
     number_of_surfaces = int(np.max(Q) + 1)
     assemble_surfaces(Q, angles, vectors, rgb, lab, depth_image, number_of_surfaces, patches)
@@ -464,4 +583,12 @@ def main():
     plot_surfaces(occlusions, False)
 
 if __name__ == '__main__':
+    #train_k_means_for_texture_vectors()
+    #test_clusters()
+    #quit()
+    #f = extract_features_function()
+    #depth, rgb, annotation = load_image(110)
+    #out = f(rgb)
+    #print(np.shape(out))
+    #quit()
     main()
