@@ -200,6 +200,6 @@ def plot_surfaces(Q, max=True):
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image(test_indices, load_index=2)
+    test_model_on_image([90], load_index=2)
     quit()
 
