@@ -547,7 +547,7 @@ def calculate_nearest_point_function():
     func = tf.function(nearest_point_wrapper)
     return lambda x, y: calculate_nearest_point_init(x, y, func)
 
-def extract_features_function():
+def extract_texture_function():
     resnet = tf.keras.applications.resnet50.ResNet50(include_top=False, weights='imagenet', input_shape=(480, 640, 3))
     resnet.summary()
     model = Model(inputs=resnet.inputs, outputs=resnet.layers[38].output)
