@@ -208,14 +208,42 @@ def swap_values(vec):
 
 def determine_convexity_with_closest_points(angles, closest_points, neighbors, number_of_surfaces, depth_image, join_matrix, surfaces):
     convexity = np.zeros((number_of_surfaces, number_of_surfaces))
+    concave = np.zeros((number_of_surfaces, number_of_surfaces))
+
     for i in range(number_of_surfaces):
         for j in range(len(neighbors[i])):
             surface_2 = neighbors[i][j]
             index_1 = neighbors[surface_2].index(i)
             if surface_2 < i:
                 continue
+
             c_1 = closest_points[i][j]
             c_2 = closest_points[surface_2][index_1]
+
+            connected = True
+            direction = c_2 - c_1
+            length = np.max(np.abs(direction))
+            direction = direction / max(length, 1)
+            height = depth_image[c_1[1]][c_1[0]]
+            s = surfaces[c_1[1]][c_1[0]]
+            different_surface = False
+            factor = np.dot(np.abs(direction), [factor_x, factor_y]) / np.sum(direction) * 6
+            for m in range(length + 1):
+                point = [int(p) for p in np.round(c_1 + m * direction)]
+                new_s = surfaces[point[1]][point[0]]
+                if new_s != s:
+                    different_surface = not different_surface
+                new_height = depth_image[point[1]][point[0]]
+                if np.abs(new_height - height) > factor * height:
+                    if s != new_s:
+                        connected = False
+                        break
+                height = new_height
+                s = new_s
+
+            if not connected:
+                continue
+
             depth_1 = depth_image[c_1[1]][c_1[0]]
             depth_2 = depth_image[c_2[1]][c_2[0]]
             middle_depth = (depth_1 + depth_2) / 2
@@ -225,51 +253,32 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
             normal_1, normal_2 = angles_to_normals(np.asarray([angles[c_1[1]][c_1[0]], angles[c_2[1]][c_2[0]]]))
             v1 = np.dot(diff, normal_1)
             v2 = np.dot(diff, normal_2)
-            convex = False
-            if v1 - v2 > 0:
-                convex = True
-                direction = c_2 - c_1
-                length = np.max(np.abs(direction))
-                direction = direction / max(length, 1)
-                height = depth_image[c_1[1]][c_1[0]]
-                s = surfaces[c_1[1]][c_1[0]]
-                different_surface = False
-                factor = np.dot(np.abs(direction), [factor_x, factor_y]) / np.sum(direction) * 6
-                for m in range(length+1):
-                    point = [int(p) for p in np.round(c_1 + m*direction)]
-                    new_s = surfaces[point[1]][point[0]]
-                    if new_s != s:
-                        different_surface = not different_surface
-                    new_height = depth_image[point[1]][point[0]]
-                    if np.abs(new_height - height) > factor*height:
-                        if s != new_s:
-                            convex = False
-                            break
-                    height = new_height
-                    s = new_s
 
-            if convex:
+            if v1 - v2 > 0.01:
                 convexity[i][surface_2] = 1
                 convexity[surface_2][i] = 1
-            #     direction = c_2 - c_1
-            #     length = np.max(np.abs(direction))
-            #     direction = direction / max(length, 1)
-            #     for m in range(length + 1):
-            #         point = c_1 + m * direction
-            #         surfaces[int(point[1])][int(point[0])] = 70
-            # else:
-            #     direction = c_2 - c_1
-            #     length = np.max(np.abs(direction))
-            #     direction = direction / max(length, 1)
-            #     for m in range(length + 1):
-            #         point = c_1 + m * direction
-            #         surfaces[int(point[1])][int(point[0])] = 0
+                #     direction = c_2 - c_1
+                #     length = np.max(np.abs(direction))
+                #     direction = direction / max(length, 1)
+                #     for m in range(length + 1):
+                #         point = c_1 + m * direction
+                #         surfaces[int(point[1])][int(point[0])] = 70
+            else:
+                concave[i][surface_2] = 1
+                concave[surface_2][i] = 1
+                # else:
+                #     direction = c_2 - c_1
+                #     length = np.max(np.abs(direction))
+                #     direction = direction / max(length, 1)
+                #     for m in range(length + 1):
+                #         point = c_1 + m * direction
+                #         surfaces[int(point[1])][int(point[0])] = 0
 
     join_matrix = join_matrix + convexity
     join_matrix[join_matrix > 1] = 1
-    return join_matrix
+    return join_matrix, concave
 
-def determine_similar_patches(texture_similarities, color_similarities, normal_similarities, threshold_1, threshold_2, threshold_3, neighbors):
+def determine_similar_patches(texture_similarities, color_similarities, normal_similarities, threshold_1, threshold_2, threshold_3, threshold_4, threshold_5, neighbors):
     similar_patches_1 = np.zeros_like(texture_similarities)
     similar_patches_1[texture_similarities < threshold_1] = 1
     similar_patches_1[color_similarities > threshold_2] = 0
@@ -278,19 +287,26 @@ def determine_similar_patches(texture_similarities, color_similarities, normal_s
     similar_patches_2[color_similarities < 0.4] = 1
     similar_patches_2[normal_similarities > threshold_3] = 0
 
+    similar_patches_3 = np.zeros_like(texture_similarities)
+    similar_patches_3[texture_similarities < threshold_4] = 1
+    similar_patches_3[color_similarities > threshold_5] = 0
+
     for i in range(np.shape(texture_similarities)[0]):
         similar_patches_2[i][i] = 0
         for n in neighbors[i]:
             similar_patches_2[i][n] = 0
 
-    return similar_patches_1, similar_patches_2
+    return similar_patches_1, similar_patches_2, similar_patches_3
 
-def determine_similar_neighbors(similar_patches, neighbors, join_matrix, number_of_surfaces):
+def determine_similar_neighbors(similar_patches, more_similar_patches, neighbors, join_matrix, number_of_surfaces, concave):
     similar_neighbors = np.zeros((number_of_surfaces, number_of_surfaces))
     for s_1 in range(number_of_surfaces):
         for s_2 in range(s_1 + 1, number_of_surfaces):
             if s_2 in neighbors[s_1]:
-                if similar_patches[s_1][s_2] == 1:
+                if similar_patches[s_1][s_2] == 1 and concave[s_1][s_2] == 0:
+                    similar_neighbors[s_1][s_2] = 1
+                    similar_neighbors[s_2][s_1] = 1
+                elif more_similar_patches[s_1][s_2]:
                     similar_neighbors[s_1][s_2] = 1
                     similar_neighbors[s_2][s_1] = 1
 
@@ -509,11 +525,12 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
     neighbors, border_centers = determine_neighbors_with_border_centers(surfaces, number_of_surfaces, depth_edges)
     surface_patch_points = extract_points(patches, number_of_surfaces)
 
-    similar_patches_1, similar_patches_2 = determine_similar_patches(texture_similarities, color_similarities, angle_similarities, 9, 0.6, 1.5, neighbors)
+    similar_patches_1, similar_patches_2, similar_patches_3 = determine_similar_patches(texture_similarities, color_similarities, angle_similarities, 9, 0.6, 1.5, 5, 0.3, neighbors)
 
     join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
-    join_matrix = determine_similar_neighbors(similar_patches_1, neighbors, join_matrix, number_of_surfaces)
-    join_matrix = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, number_of_surfaces, depth_image, join_matrix, surfaces)
+    join_matrix, concave = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
+                                                                 border_centers, normal_angles, number_of_surfaces, depth_image, join_matrix, surfaces)
+    join_matrix = determine_similar_neighbors(similar_patches_1, similar_patches_3, neighbors, join_matrix, number_of_surfaces, concave)
     _, relabeling = join_surfaces_according_to_join_matrix(join_matrix, surfaces, number_of_surfaces)
     join_matrix = determine_occluded_patches(nearest_points_func, similar_patches_2, number_of_surfaces, average_positions, surface_patch_points, surfaces, depth_image, join_matrix, relabeling)
 
