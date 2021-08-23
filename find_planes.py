@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 
+import calculate_normals
 import find_edges
 import plot_image
 import standard_values
@@ -73,6 +74,17 @@ def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width, numbe
             index += 1
     return Q
 
+def remove_noise(image):
+    max_image = np.argmax(image, axis=-1)
+    for y in range(1, height-1):
+        for x in range(1, width-1):
+            s = max_image[y][x]
+            if s != 0:
+                if max_image[y-1][x] != s and max_image[y+1][x] != s and max_image[y][x-1] != s and max_image[y][x-1] != s:
+                    image[y][x] = 0
+    return image
+
+
 def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, kernel_size=10):
     div_x, div_y = 40, 40
     size_x, size_y = int(width / div_x), int(height / div_y)
@@ -123,10 +135,11 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
     print(*load_parameters(load_index))
     results = []
     for index in image_indices:
-        t = time.time()
         depth_image, rgb_image, annotation = load_image(index)
-        log_depth, angles, vectors = normals_and_log_depth(depth_image)
 
+        t = time.time()
+        log_depth, angles, vectors = normals_and_log_depth(depth_image)
+        plot_image.plot_normals(vectors)
         features, grid = extract_features(log_depth, rgb_image, angles)
         smoothed_depth = smoothing_model(depth_image, grid)
 
@@ -150,13 +163,14 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        plot_surfaces(Q)
+        #plot_surfaces(Q)
         results.append(Q)
-        np.save("out/Q.npy", Q)
-        np.save("out/depth.npy", depth_image)
-        np.save("out/angles.npy", angles)
-        np.save("out/vectors.npy", vectors )
-        np.save("out/patches.npy", surfaces)
+        os.makedirs(f"out/{index}", exist_ok=True)
+        np.save(f"out/{index}/Q.npy", Q)
+        np.save(f"out/{index}/depth.npy", depth_image)
+        np.save(f"out/{index}/angles.npy", angles)
+        np.save(f"out/{index}/vectors.npy", vectors)
+        np.save(f"out/{index}/patches.npy", surfaces)
         #return Q, depth_image, angles
     return results
 
@@ -200,6 +214,8 @@ def plot_surfaces(Q, max=True):
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image([90], load_index=2)
+    test_model_on_image([100], load_index=2)
     quit()
+    test_model_on_image(list(range(110)), load_index=2)
+    quit() # 40, 99
 

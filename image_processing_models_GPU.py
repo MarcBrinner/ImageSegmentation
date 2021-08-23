@@ -347,7 +347,7 @@ class Calc_Angles(layers.Layer):
 
 class Depth_Cutoff(layers.Layer):
     def call(self, input, middle):
-        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.subtract(y, y[middle])), 0.03), tf.zeros_like(y), tf.ones_like(y)), x), input)
+        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.subtract(y, y[middle])), 0.3), tf.zeros_like(y), tf.ones_like(y)), x), input)
 
 class Gauss_Weights(layers.Layer):
     def call(self, input, middle, sigma, mask):
@@ -420,11 +420,20 @@ def convert_to_log_depth(depth_image):
     log_image = tf.where(tf.math.is_inf(log_image), 0.0, log_image)
     return log_image
 
-def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
+def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
     p = pool_size*2+1
+    x_val = tf.constant(viewing_angle_x/2, dtype="float32")
+    y_val = tf.constant(viewing_angle_y/2, dtype="float32")
+
+    x_list = tf.scalar_mul(x_val, tf.divide(tf.subtract(tf.range(0, width, 1, dtype="float32"), width/2 - 0.5), width/2 - 0.5))
+    y_list = tf.scalar_mul(y_val, tf.divide(tf.subtract(tf.range(0, height, 1, dtype="float32"), height/2 - 0.5), height/2 - 0.5))
+
+    x_array = tf.expand_dims(tf.tile(tf.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
+    y_array = tf.expand_dims(tf.tile(tf.expand_dims(y_list, axis=1), [1, width]), axis=-1)
+    angle_values = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
 
     depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
-    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
+    depth_image_expanded = tf.expand_dims(depth_image * tf.expand_dims(angle_values, axis=0), axis=-1)
 
     log_image = tf.expand_dims(convert_to_log_depth(depth_image), axis=-1)
 
@@ -463,8 +472,8 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     return lambda image: model.predict([np.asarray([image]), np.asarray([2*factor_x]), np.asarray([2*factor_y])], batch_size=1)
 
 
-def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675404672 * 14, height=height, width=width, alpha=6, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
-    if factor_array is None:
+def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675404672 * 10, height=height, width=width, alpha=6, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
+    if factor_array is None: # 0.007003343675404672 * 14
         factor_array = [factor_y, factor_x]
 
     # Find curvature score edges
@@ -474,7 +483,8 @@ def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675
 
     curvature_scores = tf.zeros(shape)
     factors = tf.broadcast_to(tf.reshape(tf.constant(factor_array, dtype=tf.float32), (1, 1, 2)), (shape[0], shape[1], 2))
-    central_points = tf.concat([tf.zeros((shape[0], shape[1], 2)), tf.expand_dims(depth_image[depth:-depth, depth:-depth], axis=-1)], axis=-1)
+    central_depths = tf.expand_dims(depth_image[depth:-depth, depth:-depth], axis=-1)
+    central_points = tf.concat([tf.zeros((shape[0], shape[1], 2)), tf.ones_like(central_depths)], axis=-1)
 
     for direction in [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]:
         d = tf.reshape(tf.constant(direction, dtype=tf.float32), (1, 1, 2))
@@ -483,7 +493,7 @@ def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675
         prev_distances = tf.zeros_like(curvature_scores)
         prev_points = central_points
         for k in range(1, depth+1):
-            new_points = tf.concat([factors*k*d*tf.gather(central_points, [2], axis=-1), tf.expand_dims(tf.slice(depth_image, [depth-k*direction[0], depth-k*direction[1]], shape), axis=-1)], axis=-1)
+            new_points = tf.concat([factors*k*d*tf.gather(central_points, [2], axis=-1), tf.math.divide_no_nan(tf.expand_dims(tf.slice(depth_image, [depth-k*direction[0], depth-k*direction[1]], shape), axis=-1), central_depths)], axis=-1)
             dif_1 = tf.sqrt(tf.reduce_sum(tf.square(new_points - prev_points), axis=-1))
             dif_2 = tf.sqrt(tf.reduce_sum(tf.square(new_points - central_points), axis=-1))
             score = tf.math.divide_no_nan((dif_1 + prev_distances), dif_2) - 1
@@ -494,7 +504,6 @@ def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675
 
     pixels = tf.cast(tf.less(curvature_scores, threshold), tf.int32)
     pixels = tf.pad(tf.where(tf.greater(tf.squeeze(tf.gather(central_points, [2], axis=-1), axis=-1), 0.001), pixels, 0), [[depth, depth], [depth, depth]], constant_values=0)
-
     # Smooth edges
 
     pixels = tf.where(tf.greater(tf.reduce_sum(tf.image.extract_patches(tf.expand_dims(tf.expand_dims(pixels, 0), -1), [1, 2*s1+1, 2*s1+1, 1], padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), axis=-1, keepdims=True), n1), 1, 0)
@@ -511,7 +520,6 @@ def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675
 
     middle = tf.expand_dims(middle, axis=-1)
     diffs = tf.concat([sub_1, sub_3, sub_2, sub_4], axis=-1) - middle
-
 
     factors = tf.tile(tf.multiply(tf.broadcast_to(tf.reshape(tf.constant([f*alpha for f in factor_array], dtype=tf.float32), (1, 1, 2)), (height-2, width-2, 2)), middle), [1, 1, 2])
     edges = tf.pad(tf.reduce_min(tf.where(tf.greater(diffs, factors), 0, 1), axis=-1), [[1, 1], [1, 1]], constant_values=0)
@@ -549,7 +557,12 @@ def calculate_nearest_point_function():
 
 def extract_texture_function():
     resnet = tf.keras.applications.resnet50.ResNet50(include_top=False, weights='imagenet', input_shape=(480, 640, 3))
+    #pool = layers.AvgPool2D((3, 3), strides=(1, 1), padding="same")(resnet.layers[38].output)
+    #norm = tf.math.divide_no_nan(resnet.layers[38].output, tf.norm(resnet.layers[70].output, axis=-1, keepdims=True))
     resnet.summary()
-    model = Model(inputs=resnet.inputs, outputs=resnet.layers[38].output)
+    model = Model(inputs=resnet.inputs, outputs=resnet.layers[17].output)
     model.summary()
     return lambda x: model(np.expand_dims(x, axis=0))
+
+if __name__ == '__main__':
+    extract_texture_function()
