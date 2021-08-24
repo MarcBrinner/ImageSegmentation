@@ -125,7 +125,7 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
-    div_x, div_y = 40, 40
+    div_x, div_y = 4, 4
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -135,6 +135,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
     print(*load_parameters(load_index))
     results = []
     for index in image_indices:
+        print(index)
         depth_image, rgb_image, annotation = load_image(index)
 
         t = time.time()
@@ -164,7 +165,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        plot_surfaces(Q)
+        #plot_surfaces(Q)
         results.append(Q)
         os.makedirs(f"out/{index}", exist_ok=True)
         np.save(f"out/{index}/Q.npy", Q)
@@ -216,8 +217,8 @@ def plot_surfaces(Q, max=True):
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image([0], load_index=2)
-    quit()
-    test_model_on_image(list(range(110)), load_index=2)
+    #test_model_on_image([0], load_index=2)
+    #quit()
+    test_model_on_image(list(range(111)), load_index=2)
     quit() # 40, 99
 

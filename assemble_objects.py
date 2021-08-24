@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 import find_edges
 import matplotlib.pyplot as plt
-
+import load_pcd
 import plot_image
 from standard_values import *
 from image_operations import rgb_to_Lab
@@ -118,7 +118,7 @@ def determine_centroids(depth_image, positions, average_positions, points_in_spa
             continue
         point = positions[i][np.argmin(np.sum(np.square(positions[i] - average_positions[i]), axis=-1))]
         #centroids.append([point[0], point[1], depth_image[point[1]][point[0]]])
-        centroids.append(points_in_space[point[0]][point[1]])
+        centroids.append(points_in_space[point[1]][point[0]])
     return np.asarray(centroids)
 
 
@@ -555,6 +555,8 @@ def determine_coplanarity(similarities, angle_similarities, number_of_surfaces, 
             for j in range(i+1, number_of_surfaces):
                 if planes[j] > 0 and similarities[i][j] > 0:
                     diff = (lambda x: x/np.linalg.norm(x))(centroids[i] - centroids[j])
+                    val_1 = np.abs(np.dot(diff, normal_vectors[i]))
+                    val_2 = np.abs(np.dot(diff, normal_vectors[j]))
                     if angle_similarities[i][j] < 1 and np.abs(np.dot(diff, normal_vectors[i])) < 0.1 and np.abs(np.dot(diff, normal_vectors[j])) < 0.1:
                         coplanarity[i][j] = 1
                         coplanarity[j][i] = 1
@@ -605,6 +607,7 @@ def texture_similarity_calc(texture_vecs, number_of_surfaces):
 def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces, patches, models, vectors, points_in_space):
     #plot_image.plot_normals(np.reshape(angles_to_normals(np.reshape(normal_angles, (480*640, 2))),(480, 640, 3)))
     #quit()
+    plot_surfaces(surfaces, False)
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
     plot_surfaces(surfaces, False)
     average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids \
@@ -634,9 +637,9 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
 def main():
     models = get_GPU_models()
-    for index in list(range(109, 110)):
+    for index in list(range(111)):
         print(index)
-        index = 0
+        #index = 2
         depth, rgb, annotation = load_image(index)
         lab = rgb_to_Lab(rgb)
         Q = np.load(f"out/{index}/Q.npy")
@@ -645,6 +648,8 @@ def main():
         patches = np.load(f"out/{index}/patches.npy")
         vectors = np.load(f"out/{index}/vectors.npy")
         points_in_space = np.load(f"out/{index}/points.npy")
+        load_pcd.create_pcd_from_points(points_in_space, rgb, vectors)
+        quit()
         Q = np.argmax(Q, axis=-1)
         number_of_surfaces = int(np.max(Q) + 1)
         assemble_surfaces(Q, angles, rgb, lab, depth_image, number_of_surfaces, patches, models, vectors, points_in_space)

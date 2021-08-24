@@ -422,11 +422,12 @@ def convert_to_log_depth(depth_image):
 
 def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     p = pool_size*2+1
+    angles = tf.constant(np.load("out/angles.npy"), dtype="float32")
     x_val = tf.constant(viewing_angle_x/2, dtype="float32")
     y_val = tf.constant(viewing_angle_y/2, dtype="float32")
 
-    x_list = tf.scalar_mul(x_val, tf.divide(tf.subtract(tf.range(0, width, 1, dtype="float32"), width/2 - 0.5), width/2 - 0.5))
-    y_list = tf.scalar_mul(y_val, tf.divide(tf.subtract(tf.range(0, height, 1, dtype="float32"), height/2 - 0.5), height/2 - 0.5))
+    x_list = tf.scalar_mul(x_val, tf.subtract(tf.divide(tf.range(0, width, 1, dtype="float32"), width/2 - 0.5), 1))
+    y_list = tf.scalar_mul(y_val, tf.subtract(tf.divide(tf.range(0, height, 1, dtype="float32"), height/2 - 0.5), 1))
 
     x_array = tf.expand_dims(tf.tile(tf.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
     y_array = tf.expand_dims(tf.tile(tf.expand_dims(y_list, axis=1), [1, width]), axis=-1)

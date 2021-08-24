@@ -2,6 +2,8 @@ import numpy as np
 import open3d as o3d
 import os
 import load_images
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation
 
 def load_image_as_point_cloud(index):
@@ -79,6 +81,15 @@ def extract_RGB_image(pcd):
         color = np.asarray([int(color[0]*255), int(color[1]*255), int(color[2]*255)])
         image[y][x] = color
     return image
+
+def create_pcd_from_points(points, colors, normals):
+    fig = plt.figure(figsize=(4, 4))
+    ax = fig.add_subplot(111, projection='3d')
+    p = np.reshape(points, (640*480, 3))
+    p = np.asarray([p[8*i] for i in range(int(640*480/8))])
+    ax.scatter(p[:, 0], p[:, 1], p[:, 2]) # plot the point (2,3,4) on the figure
+
+    plt.show()
 
 
 if __name__ == '__main__':

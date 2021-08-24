@@ -11,6 +11,16 @@ from load_images import load_image
 from plot_image import plot_normals
 from standard_values import *
 
+def calc_angles():
+    x_list = viewing_angle_x * (np.divide(np.arange(0, width, 1, dtype="float32"), width / 2 - 0.5) - 1)
+    y_list = viewing_angle_y * (np.divide(np.arange(0, height, 1, dtype="float32"), height / 2 - 0.5) - 1)
+
+    x_array = np.expand_dims(np.tile(np.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
+    y_array = np.expand_dims(np.tile(np.expand_dims(y_list, axis=1), [1, width]), axis=-1)
+    vectors = angles_to_normals(np.concatenate([x_array, y_array], axis=-1), np.ones((height, width)))
+    angles = np.arccos(np.divide(-vectors[:, :, 2], np.linalg.norm(vectors, axis=-1)))/np.pi * 180
+    np.save("out/angles.npy", angles)
+
 @njit()
 def calculate_normals_plane_fitting(image, neighborhood_size):
     return_array = np.zeros((np.shape(image)[0], np.shape(image)[1], 3))
@@ -172,7 +182,7 @@ def normals_to_angles(normal_image):
             angles[y][x][1] = math.acos(-vec_proj[2]/(np.linalg.norm(vec_proj))) * -np.sign(vec_proj[0])
     return angles
 
-def angles_to_normals(angles, depth_image):
+def angles_to_normals(angles, depth_image, negative=False):
     height, width, _ = np.shape(angles)
     normals = np.zeros((height, width, 3))
     axis_1 = np.asarray([1.0, 0.0, 0.0])
@@ -197,3 +207,6 @@ def calculate_normals_as_angles_final(depth_image, log_depth):
     angles = normals_to_angles(normals)
     angles = uniform_filter_with_log_depth_cutoff_angles(angles, log_depth, 2)
     return angles
+
+if __name__ == '__main__':
+    calc_angles()
