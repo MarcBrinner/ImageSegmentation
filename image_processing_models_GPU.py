@@ -431,9 +431,10 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
 
     x_array = tf.expand_dims(tf.tile(tf.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
     y_array = tf.expand_dims(tf.tile(tf.expand_dims(y_list, axis=1), [1, width]), axis=-1)
-    angle_values_depth = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
+    #angle_values_depth = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
     angle_values_x = tf.math.sin(x_array)
     angle_values_y = tf.math.sin(y_array)
+    angle_values_depth = tf.math.cos(angles)
 
     depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
     depth_image_expanded = tf.expand_dims(depth_image * tf.expand_dims(angle_values_depth, axis=0), axis=-1)

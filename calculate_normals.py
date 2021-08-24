@@ -18,7 +18,7 @@ def calc_angles():
     x_array = np.expand_dims(np.tile(np.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
     y_array = np.expand_dims(np.tile(np.expand_dims(y_list, axis=1), [1, width]), axis=-1)
     vectors = angles_to_normals(np.concatenate([x_array, y_array], axis=-1), np.ones((height, width)))
-    angles = np.arccos(np.divide(-vectors[:, :, 2], np.linalg.norm(vectors, axis=-1)))/np.pi * 180
+    angles = np.arccos(np.divide(-vectors[:, :, 2], np.linalg.norm(vectors, axis=-1)))
     np.save("out/angles.npy", angles)
 
 @njit()
@@ -182,7 +182,7 @@ def normals_to_angles(normal_image):
             angles[y][x][1] = math.acos(-vec_proj[2]/(np.linalg.norm(vec_proj))) * -np.sign(vec_proj[0])
     return angles
 
-def angles_to_normals(angles, depth_image, negative=False):
+def angles_to_normals(angles, depth_image, different=False):
     height, width, _ = np.shape(angles)
     normals = np.zeros((height, width, 3))
     axis_1 = np.asarray([1.0, 0.0, 0.0])
@@ -195,7 +195,10 @@ def angles_to_normals(angles, depth_image, negative=False):
             vec = middle_vector.copy()
             rot = Rotation.from_rotvec(angles[y][x][0] * axis_1)
             vec = rot.apply(vec)
-            rot = Rotation.from_rotvec(angles[y][x][1] * axis_2)
+            if different:
+                rot = Rotation.from_rotvec(angles[y][x][1] * axis_1)
+            else:
+                rot = Rotation.from_rotvec(angles[y][x][1] * axis_2)
             vec = rot.apply(vec)
             normals[y][x] = vec
     return normals
