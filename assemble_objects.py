@@ -107,7 +107,7 @@ def determine_neighbors_with_border_centers_calc(surfaces, number_of_surfaces, d
 
     return neighbors_list, border_centers
 
-def determine_centroids(depth_image, positions, average_positions):
+def determine_centroids(depth_image, positions, average_positions, points_in_space):
     for i in range(len(positions)):
         del positions[i][0]
     positions = [np.asarray(p) for p in positions]
@@ -117,7 +117,8 @@ def determine_centroids(depth_image, positions, average_positions):
             centroids.append([-1, -1])
             continue
         point = positions[i][np.argmin(np.sum(np.square(positions[i] - average_positions[i]), axis=-1))]
-        centroids.append([point[0], point[1], depth_image[point[1]][point[0]]])
+        #centroids.append([point[0], point[1], depth_image[point[1]][point[0]]])
+        centroids.append(points_in_space[point[0]][point[1]])
     return np.asarray(centroids)
 
 
@@ -554,16 +555,14 @@ def determine_coplanarity(similarities, angle_similarities, number_of_surfaces, 
             for j in range(i+1, number_of_surfaces):
                 if planes[j] > 0 and similarities[i][j] > 0:
                     diff = (lambda x: x/np.linalg.norm(x))(centroids[i] - centroids[j])
-                    val_1 = np.dot(diff, normal_vectors[i])
-                    val_2 = np.dot(diff, normal_vectors[j])
-                    if angle_similarities[i][j] < 1 and np.dot(diff, normal_vectors[i]) > 0.995 and np.dot(diff, normal_vectors[j]) > 0.995:
+                    if angle_similarities[i][j] < 1 and np.abs(np.dot(diff, normal_vectors[i])) < 0.1 and np.abs(np.dot(diff, normal_vectors[j])) < 0.1:
                         coplanarity[i][j] = 1
                         coplanarity[j][i] = 1
     return coplanarity
 
-def extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image):
+def extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space):
     average_positions, counts, positions = calc_average_position_and_counts(surfaces, number_of_surfaces)
-    centroids = determine_centroids(depth_image, positions, average_positions)
+    centroids = determine_centroids(depth_image, positions, average_positions, points_in_space)
     texture = texture_image(rgb_image, texture_model)
     histogram_color, histogram_angles, histogram_texture = color_and_angle_histograms(lab_image, normal_angles,
                                                                                       surfaces, number_of_surfaces,
@@ -603,13 +602,13 @@ def texture_similarity_calc(texture_vecs, number_of_surfaces):
     diff = vecs_1 - vecs_2
     return np.sqrt(np.sum(np.square(diff), axis=-1))
 
-def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces, patches, models, vectors):
+def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces, patches, models, vectors, points_in_space):
     #plot_image.plot_normals(np.reshape(angles_to_normals(np.reshape(normal_angles, (480*640, 2))),(480, 640, 3)))
     #quit()
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
     plot_surfaces(surfaces, False)
     average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids \
-        = extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image)
+        = extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space)
 
     color_similarities = color_similarity_model(histogram_color)
     angle_similarities = angle_similarity_model(histogram_angles)
@@ -645,9 +644,10 @@ def main():
         angles = np.load(f"out/{index}/angles.npy")
         patches = np.load(f"out/{index}/patches.npy")
         vectors = np.load(f"out/{index}/vectors.npy")
+        points_in_space = np.load(f"out/{index}/points.npy")
         Q = np.argmax(Q, axis=-1)
         number_of_surfaces = int(np.max(Q) + 1)
-        assemble_surfaces(Q, angles, rgb, lab, depth_image, number_of_surfaces, patches, models, vectors)
+        assemble_surfaces(Q, angles, rgb, lab, depth_image, number_of_surfaces, patches, models, vectors, points_in_space)
     quit()
 
 if __name__ == '__main__':

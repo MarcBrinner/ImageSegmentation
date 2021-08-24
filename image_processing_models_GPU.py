@@ -420,7 +420,7 @@ def convert_to_log_depth(depth_image):
     log_image = tf.where(tf.math.is_inf(log_image), 0.0, log_image)
     return log_image
 
-def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
+def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     p = pool_size*2+1
     x_val = tf.constant(viewing_angle_x/2, dtype="float32")
     y_val = tf.constant(viewing_angle_y/2, dtype="float32")
@@ -430,15 +430,21 @@ def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
 
     x_array = tf.expand_dims(tf.tile(tf.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
     y_array = tf.expand_dims(tf.tile(tf.expand_dims(y_list, axis=1), [1, width]), axis=-1)
-    angle_values = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
+    angle_values_depth = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
+    angle_values_x = tf.math.sin(x_array)
+    angle_values_y = tf.math.sin(y_array)
 
     depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
-    depth_image_expanded = tf.expand_dims(depth_image * tf.expand_dims(angle_values, axis=0), axis=-1)
+    depth_image_expanded = tf.expand_dims(depth_image * tf.expand_dims(angle_values_depth, axis=0), axis=-1)
 
     log_image = tf.expand_dims(convert_to_log_depth(depth_image), axis=-1)
 
     smoothed_depth = uniform_filter_with_depth_cutoff(depth_image_expanded, log_image, [1, p, p, 1], int((p**2-1)/2), 1, p**2)
     smoothed_log = uniform_filter_with_depth_cutoff(log_image, log_image, [1, p, p, 1], int((p**2-1)/2), 1, p**2)
+
+    x_array = angle_values_x*smoothed_depth
+    y_array = angle_values_y*smoothed_depth
+    points_in_space = layers.Concatenate()([x_array, y_array, smoothed_depth])
 
     factor_x_in = layers.Input(shape=(1,), dtype=tf.float32)
     factor_y_in = layers.Input(shape=(1,), dtype=tf.float32)
@@ -468,7 +474,7 @@ def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
     angles = Calc_Angles()(normals)
     smoothed_angles = uniform_filter_with_depth_cutoff(tf.expand_dims(angles, axis=0), log_image, [1, p, p, 1], int((p**2-1)/2), 2, p**2)
 
-    model = Model(inputs=[depth_image, factor_x_in, factor_y_in], outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals])
+    model = Model(inputs=[depth_image, factor_x_in, factor_y_in], outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals, points_in_space])
     return lambda image: model.predict([np.asarray([image]), np.asarray([2*factor_x]), np.asarray([2*factor_y])], batch_size=1)
 
 

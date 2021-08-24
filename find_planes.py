@@ -138,8 +138,9 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         depth_image, rgb_image, annotation = load_image(index)
 
         t = time.time()
-        log_depth, angles, vectors = normals_and_log_depth(depth_image)
-        plot_image.plot_normals(vectors)
+        log_depth, angles, vectors, points = normals_and_log_depth(depth_image)
+        #plot_image.plot_normals(vectors)
+        #quit()
         features, grid = extract_features(log_depth, rgb_image, angles)
         smoothed_depth = smoothing_model(depth_image, grid)
 
@@ -163,7 +164,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        #plot_surfaces(Q)
+        plot_surfaces(Q)
         results.append(Q)
         os.makedirs(f"out/{index}", exist_ok=True)
         np.save(f"out/{index}/Q.npy", Q)
@@ -171,6 +172,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         np.save(f"out/{index}/angles.npy", angles)
         np.save(f"out/{index}/vectors.npy", vectors)
         np.save(f"out/{index}/patches.npy", surfaces)
+        np.save(f"out/{index}/points.npy", points)
         #return Q, depth_image, angles
     return results
 
@@ -214,7 +216,7 @@ def plot_surfaces(Q, max=True):
 
 if __name__ == '__main__':
     #train_model_on_images(train_indices)
-    test_model_on_image([100], load_index=2)
+    test_model_on_image([0], load_index=2)
     quit()
     test_model_on_image(list(range(110)), load_index=2)
     quit() # 40, 99
