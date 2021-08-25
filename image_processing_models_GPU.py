@@ -422,9 +422,9 @@ def convert_to_log_depth(depth_image):
 
 def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     p = pool_size*2+1
-    angles = tf.constant(np.load("out/angles.npy"), dtype="float32")
+
     x_val = tf.constant(viewing_angle_x/2, dtype="float32")
-    y_val = tf.constant(viewing_angle_y/2, dtype="float32")
+    y_val = tf.constant(viewing_angle_y/4, dtype="float32")
 
     x_list = tf.scalar_mul(x_val, tf.subtract(tf.divide(tf.range(0, width, 1, dtype="float32"), width/2 - 0.5), 1))
     y_list = tf.scalar_mul(y_val, tf.subtract(tf.divide(tf.range(0, height, 1, dtype="float32"), height/2 - 0.5), 1))
@@ -432,12 +432,11 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     x_array = tf.expand_dims(tf.tile(tf.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
     y_array = tf.expand_dims(tf.tile(tf.expand_dims(y_list, axis=1), [1, width]), axis=-1)
     #angle_values_depth = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
-    angle_values_x = tf.math.sin(x_array)
-    angle_values_y = tf.math.sin(y_array)
-    angle_values_depth = tf.math.cos(angles)
+    angle_values_x = tf.ones_like(x_array)
+    angle_values_y = tf.ones_like(y_array)
 
     depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
-    depth_image_expanded = tf.expand_dims(depth_image * tf.expand_dims(angle_values_depth, axis=0), axis=-1)
+    depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
 
     log_image = tf.expand_dims(convert_to_log_depth(depth_image), axis=-1)
 
