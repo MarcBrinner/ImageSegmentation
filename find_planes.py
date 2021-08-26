@@ -125,7 +125,7 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
-    div_x, div_y = 4, 4
+    div_x, div_y = 40, 40
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -140,8 +140,8 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
 
         t = time.time()
         log_depth, angles, vectors, points = normals_and_log_depth(depth_image)
-        #plot_image.plot_normals(vectors)
-        #quit()
+        #normal_vectors = calculate_normals.calculate_normals_cross_product(depth_image)
+        #print()
         features, grid = extract_features(log_depth, rgb_image, angles)
         smoothed_depth = smoothing_model(depth_image, grid)
 

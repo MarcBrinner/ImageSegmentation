@@ -424,16 +424,15 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     p = pool_size*2+1
 
     x_val = tf.constant(viewing_angle_x/2, dtype="float32")
-    y_val = tf.constant(viewing_angle_y/4, dtype="float32")
+    y_val = tf.constant(viewing_angle_y/2, dtype="float32")
 
     x_list = tf.scalar_mul(x_val, tf.subtract(tf.divide(tf.range(0, width, 1, dtype="float32"), width/2 - 0.5), 1))
-    y_list = tf.scalar_mul(y_val, tf.subtract(tf.divide(tf.range(0, height, 1, dtype="float32"), height/2 - 0.5), 1))
+    y_list = tf.scalar_mul(y_val, tf.subtract(tf.divide(tf.range(height-1, -1, -1, dtype="float32"), height/2 - 0.5), 1))
 
     x_array = tf.expand_dims(tf.tile(tf.expand_dims(x_list, axis=0), [height, 1]), axis=-1)
     y_array = tf.expand_dims(tf.tile(tf.expand_dims(y_list, axis=1), [1, width]), axis=-1)
-    #angle_values_depth = tf.math.cos(tf.sqrt(tf.reduce_sum(tf.square(tf.concat([y_array, x_array], axis=-1)))))
-    angle_values_x = tf.ones_like(x_array)
-    angle_values_y = tf.ones_like(y_array)
+    angle_values_x = tf.math.tan(x_array)
+    angle_values_y = tf.math.tan(y_array)
 
     depth_image = layers.Input(batch_shape=(1, height, width), dtype=tf.float32)
     depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
@@ -447,25 +446,25 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     y_array = angle_values_y*smoothed_depth
     points_in_space = layers.Concatenate()([x_array, y_array, smoothed_depth])
 
-    factor_x_in = layers.Input(shape=(1,), dtype=tf.float32)
-    factor_y_in = layers.Input(shape=(1,), dtype=tf.float32)
+    # factor_x_in = layers.Input(shape=(1,), dtype=tf.float32)
+    # factor_y_in = layers.Input(shape=(1,), dtype=tf.float32)
+    #
+    # zeros = tf.zeros(tf.shape(smoothed_depth))
+    # x_values = tf.multiply(tf.broadcast_to(factor_x, tf.shape(smoothed_depth)), smoothed_depth)
+    # y_values = tf.multiply(tf.broadcast_to(factor_y, tf.shape(smoothed_depth)), smoothed_depth)
 
-    zeros = tf.zeros(tf.shape(smoothed_depth))
-    x_values = tf.multiply(tf.broadcast_to(factor_x, tf.shape(smoothed_depth)), smoothed_depth)
-    y_values = tf.multiply(tf.broadcast_to(factor_y, tf.shape(smoothed_depth)), smoothed_depth)
-
-    pad_1 = tf.pad(smoothed_depth, [[2, 0], [0, 0], [0, 0]])
-    pad_2 = tf.pad(smoothed_depth, [[0, 2], [0, 0], [0, 0]])
-    pad_3 = tf.pad(smoothed_depth, [[0, 0], [2, 0], [0, 0]])
-    pad_4 = tf.pad(smoothed_depth, [[0, 0], [0, 2], [0, 0]])
+    pad_1 = tf.pad(points_in_space, [[2, 0], [0, 0], [0, 0]])
+    pad_2 = tf.pad(points_in_space, [[0, 2], [0, 0], [0, 0]])
+    pad_3 = tf.pad(points_in_space, [[0, 0], [2, 0], [0, 0]])
+    pad_4 = tf.pad(points_in_space, [[0, 0], [0, 2], [0, 0]])
 
     sub_1 = tf.subtract(pad_1, pad_2)[1:-1, :, :]
     sub_2 = tf.subtract(pad_4, pad_3)[:, 1:-1, :]
 
-    concat_1 = layers.Concatenate(axis=-1)([zeros, y_values, sub_1])
-    concat_2 = layers.Concatenate(axis=-1)([x_values, zeros, sub_2])
+    #concat_1 = layers.Concatenate(axis=-1)([zeros, y_values, sub_1])
+    #concat_2 = layers.Concatenate(axis=-1)([x_values, zeros, sub_2])
 
-    vectors = tf.linalg.cross(concat_1, concat_2)
+    vectors = tf.linalg.cross(sub_1, sub_2)
     condition = -tf.cast(tf.greater(tf.gather(vectors, [2], axis=-1), 0), tf.float32)
     vectors = 2*tf.multiply(tf.broadcast_to(condition, tf.shape(vectors)), vectors) + vectors
 
@@ -475,8 +474,8 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     angles = Calc_Angles()(normals)
     smoothed_angles = uniform_filter_with_depth_cutoff(tf.expand_dims(angles, axis=0), log_image, [1, p, p, 1], int((p**2-1)/2), 2, p**2)
 
-    model = Model(inputs=[depth_image, factor_x_in, factor_y_in], outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals, points_in_space])
-    return lambda image: model.predict([np.asarray([image]), np.asarray([2*factor_x]), np.asarray([2*factor_y])], batch_size=1)
+    model = Model(inputs=depth_image, outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals, points_in_space])
+    return lambda image: model.predict(np.asarray([image]), batch_size=1)
 
 
 def find_surfaces_model_GPU(depth=4, factor_array=None, threshold=0.007003343675404672 * 10, height=height, width=width, alpha=6, s1=2, s2=1, n1=11, n2=5, component_threshold=20):

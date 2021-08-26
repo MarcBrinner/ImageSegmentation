@@ -107,7 +107,7 @@ def determine_neighbors_with_border_centers_calc(surfaces, number_of_surfaces, d
 
     return neighbors_list, border_centers
 
-def determine_centroids(depth_image, positions, average_positions, points_in_space):
+def determine_centroids(positions, average_positions, points_in_space):
     for i in range(len(positions)):
         del positions[i][0]
     positions = [np.asarray(p) for p in positions]
@@ -226,7 +226,7 @@ def swap_values(vec):
 def determine_convexity_with_closest_points(angles, closest_points, neighbors, number_of_surfaces, depth_image, join_matrix, surfaces):
     convexity = np.zeros((number_of_surfaces, number_of_surfaces))
     concave = np.zeros((number_of_surfaces, number_of_surfaces))
-
+    new_surfaces = surfaces.copy()
     for i in range(number_of_surfaces):
         for j in range(len(neighbors[i])):
             surface_2 = neighbors[i][j]
@@ -289,7 +289,6 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
                 # for m in range(length + 1):
                 #     point = c_1 + m * direction
                 #     surfaces[int(point[1])][int(point[0])] = 0
-
     join_matrix = join_matrix + convexity
     join_matrix[join_matrix > 1] = 1
     return join_matrix, concave
@@ -355,6 +354,8 @@ def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfa
     inverse_pixels = 1 / pixels_per_surface * 10
     height, width = np.shape(surfaces)
     counts = np.zeros(number_of_surfaces)
+    all_angles_sum = np.zeros((number_of_surfaces, 2))
+    patch_counter = np.zeros(number_of_surfaces)
     for y in range(height):
         for x in range(width):
 
@@ -368,21 +369,29 @@ def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfa
             histograms_angles[a_1][a_2][s] += inverse_pixels[s]
             histograms_color[int(a)][int(b)][s] += inverse_pixels[s]
 
+            s = patches[y][x]
+            if s < 0.0001:
+                continue
+
+            all_angles_sum[s] += angle_image[y][x]
+            patch_counter[s] += 1
+
             if y % 4 == 0 and x % 4 == 0:
-                s = patches[y][x]
-                if s < 0.0001:
-                    continue
                 new_x = int(x/4)
                 new_y = int(y/4)
                 texture = texture_image[new_y][new_x]
                 histograms_texture[s] += texture
                 counts[s] += 1
+
+    patch_counter[patch_counter == 0] = 1
+    all_angles_sum = all_angles_sum / np.expand_dims(patch_counter, axis=-1)
+
     histograms_texture = histograms_texture / np.expand_dims(counts, axis=-1)
     histograms_texture[np.isnan(histograms_texture)] = 0
 
     histograms_texture = histograms_texture/np.sum(histograms_texture, axis=0, keepdims=True) * 10
     histograms_texture[np.isnan(histograms_texture)] = 0
-    return histograms_color, histograms_angles, histograms_texture
+    return histograms_color, histograms_angles, histograms_texture, all_angles_sum
 
 def chi_squared_distances_model(pool_size=(5, 5), strides=(2, 2)):
     input = layers.Input(shape=(None, None, None))
@@ -523,9 +532,10 @@ def find_even_planes_and_most_common_normal(angle_histogram, number_of_surfaces)
     normals = np.zeros((number_of_surfaces, 2), dtype="float32")
     for i in range(number_of_surfaces):
         indices = [[0, 0]]
+        max = np.max(angle_histogram[i])
         for j in range(l):
             for k in range(l):
-                if angle_histogram[i][j][k] > 0.7:
+                if angle_histogram[i][j][k] == max:
                     indices.append([j, k])
         del indices[0]
         if len(indices) == 0:
@@ -546,9 +556,9 @@ def find_even_planes_and_most_common_normal(angle_histogram, number_of_surfaces)
             normals[i] = np.asarray([n_1, n_2])
     return planes, normals
 
-def determine_coplanarity(similarities, angle_similarities, number_of_surfaces, centroids, angle_histogram):
+def determine_coplanarity(similarities, angle_similarities, number_of_surfaces, centroids, angle_histogram, average_normals):
     planes, normals = find_even_planes_and_most_common_normal(np.moveaxis(angle_histogram, 2, 0), number_of_surfaces)
-    normal_vectors = angles_to_normals(normals)
+    normal_vectors = angles_to_normals(average_normals)
     coplanarity = np.zeros((number_of_surfaces, number_of_surfaces))
     for i in range(number_of_surfaces):
         if planes[i] > 0:
@@ -557,20 +567,20 @@ def determine_coplanarity(similarities, angle_similarities, number_of_surfaces, 
                     diff = (lambda x: x/np.linalg.norm(x))(centroids[i] - centroids[j])
                     val_1 = np.abs(np.dot(diff, normal_vectors[i]))
                     val_2 = np.abs(np.dot(diff, normal_vectors[j]))
-                    if angle_similarities[i][j] < 1 and np.abs(np.dot(diff, normal_vectors[i])) < 0.1 and np.abs(np.dot(diff, normal_vectors[j])) < 0.1:
+                    if angle_similarities[i][j] < 1.2 and np.abs(np.dot(diff, normal_vectors[i])) < 0.1 and np.abs(np.dot(diff, normal_vectors[j])) < 0.1:
                         coplanarity[i][j] = 1
                         coplanarity[j][i] = 1
     return coplanarity
 
 def extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space):
     average_positions, counts, positions = calc_average_position_and_counts(surfaces, number_of_surfaces)
-    centroids = determine_centroids(depth_image, positions, average_positions, points_in_space)
+    centroids = determine_centroids(positions, average_positions, points_in_space)
     texture = texture_image(rgb_image, texture_model)
-    histogram_color, histogram_angles, histogram_texture = color_and_angle_histograms(lab_image, normal_angles,
+    histogram_color, histogram_angles, histogram_texture, average_normals = color_and_angle_histograms(lab_image, normal_angles,
                                                                                       surfaces, number_of_surfaces,
                                                                                       counts, texture, patches)
     depth_edges = find_edges.find_edges_from_depth_image(depth_image)
-    return average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids
+    return average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids, average_normals
 
 def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, number_of_surfaces, depth_image, join_matrix, surfaces):
     nearest_points = nearest_points_func(surface_patch_points, prepare_border_centers(neighbors, border_centers))
@@ -605,12 +615,9 @@ def texture_similarity_calc(texture_vecs, number_of_surfaces):
     return np.sqrt(np.sum(np.square(diff), axis=-1))
 
 def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces, patches, models, vectors, points_in_space):
-    #plot_image.plot_normals(np.reshape(angles_to_normals(np.reshape(normal_angles, (480*640, 2))),(480, 640, 3)))
-    #quit()
-    plot_surfaces(surfaces, False)
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
     plot_surfaces(surfaces, False)
-    average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids \
+    average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids, average_normals \
         = extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space)
 
     color_similarities = color_similarity_model(histogram_color)
@@ -621,8 +628,8 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
     surface_patch_points = extract_points(patches, number_of_surfaces)
 
     similarity_neighbors, similarity_neighbors_concave, similarity_occlusion, similarity_occlusion_coplanar\
-        = determine_similar_patches(texture_similarities, color_similarities, angle_similarities, [(9, 0.6), (5, 0.4), (7, 0.5, 1.1), (12, 1.1, 1.1)], neighbors)
-    coplanarity = determine_coplanarity(similarity_occlusion_coplanar, angle_similarities, number_of_surfaces, centroids, histogram_angles)
+        = determine_similar_patches(texture_similarities, color_similarities, angle_similarities, [(9, 0.6), (5, 0.4), (7, 0.5, 1.3), (12, 1.1, 1.3)], neighbors)
+    coplanarity = determine_coplanarity(similarity_occlusion_coplanar, angle_similarities, number_of_surfaces, centroids, histogram_angles, average_normals)
 
     join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
     join_matrix, concave = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
@@ -648,8 +655,6 @@ def main():
         patches = np.load(f"out/{index}/patches.npy")
         vectors = np.load(f"out/{index}/vectors.npy")
         points_in_space = np.load(f"out/{index}/points.npy")
-        load_pcd.create_pcd_from_points(points_in_space, rgb, vectors)
-        quit()
         Q = np.argmax(Q, axis=-1)
         number_of_surfaces = int(np.max(Q) + 1)
         assemble_surfaces(Q, angles, rgb, lab, depth_image, number_of_surfaces, patches, models, vectors, points_in_space)
