@@ -223,10 +223,9 @@ def calc_average_position_and_counts(index_image, number_of_surfaces):
 def swap_values(vec):
     return np.asarray([vec[1], vec[0], vec[2]])
 
-def determine_convexity_with_closest_points(angles, closest_points, neighbors, number_of_surfaces, depth_image, join_matrix, surfaces):
+def determine_convexity_with_closest_points(angles, closest_points, neighbors, number_of_surfaces, depth_image, join_matrix, surfaces, points_in_space):
     convexity = np.zeros((number_of_surfaces, number_of_surfaces))
     concave = np.zeros((number_of_surfaces, number_of_surfaces))
-    new_surfaces = surfaces.copy()
     for i in range(number_of_surfaces):
         for j in range(len(neighbors[i])):
             surface_2 = neighbors[i][j]
@@ -241,31 +240,39 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
             direction = c_2 - c_1
             length = np.max(np.abs(direction))
             direction = direction / max(length, 1)
-            height = depth_image[c_1[1]][c_1[0]]
+            space_point = points_in_space[c_1[1]][c_1[0]]
             s = surfaces[c_1[1]][c_1[0]]
             different_surface = False
-            factor = abs(np.dot(np.abs(direction), [factor_x, factor_y]) / np.sum(direction) * 6)
+            threshold = 4
             for m in range(length + 1):
                 point = [int(p) for p in np.round(c_1 + m * direction)]
                 new_s = surfaces[point[1]][point[0]]
                 if new_s != s:
                     different_surface = not different_surface
-                new_height = depth_image[point[1]][point[0]]
-                if np.abs(new_height - height) > factor * height:
+                new_space_point = points_in_space[point[1]][point[0]]
+                if np.abs(new_space_point[2] - space_point[2]) > threshold*np.linalg.norm(space_point[:2] - new_space_point[:2]):
                     if s != new_s:
                         connected = False
                         break
-                height = new_height
+                space_point = new_space_point
                 s = new_s
 
             if not connected:
                 continue
+            #
+            # depth_1 = depth_image[c_1[1]][c_1[0]]
+            # depth_2 = depth_image[c_2[1]][c_2[0]]
+            # middle_depth = (depth_1 + depth_2) / 2
+            # diff = c_1 - c_2
+            # diff = [diff[0]*factor_x*middle_depth, -diff[1]*factor_y*middle_depth, depth_1-depth_2]
+            # diff = diff/np.linalg.norm(diff)
+            # normal_1, normal_2 = angles_to_normals(np.asarray([angles[c_1[1]][c_1[0]], angles[c_2[1]][c_2[0]]]))
+            # v1 = np.dot(diff, normal_1)
+            # v2 = np.dot(diff, normal_2)
 
-            depth_1 = depth_image[c_1[1]][c_1[0]]
-            depth_2 = depth_image[c_2[1]][c_2[0]]
-            middle_depth = (depth_1 + depth_2) / 2
-            diff = c_1 - c_2
-            diff = [diff[0]*factor_x*middle_depth, -diff[1]*factor_y*middle_depth, depth_1-depth_2]
+            space_point_1 = points_in_space[c_1[1]][c_1[0]]
+            space_point_2 = points_in_space[c_2[1]][c_2[0]]
+            diff = space_point_1 - space_point_2
             diff = diff/np.linalg.norm(diff)
             normal_1, normal_2 = angles_to_normals(np.asarray([angles[c_1[1]][c_1[0]], angles[c_2[1]][c_2[0]]]))
             v1 = np.dot(diff, normal_1)
@@ -582,11 +589,12 @@ def extract_information(rgb_image, texture_model, surfaces, patches, number_of_s
     depth_edges = find_edges.find_edges_from_depth_image(depth_image)
     return average_positions, histogram_color, histogram_angles, histogram_texture, depth_edges, centroids, average_normals
 
-def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, number_of_surfaces, depth_image, join_matrix, surfaces):
+def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles,
+                                          number_of_surfaces, depth_image, join_matrix, surfaces, points_in_space):
     nearest_points = nearest_points_func(surface_patch_points, prepare_border_centers(neighbors, border_centers))
     nearest_points = [np.asarray(p.numpy(), dtype="int32") for p in nearest_points]
     join_matrix = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, number_of_surfaces,
-                                                          depth_image, join_matrix, surfaces)
+                                                          depth_image, join_matrix, surfaces, points_in_space)
     return join_matrix
 
 def determine_occluded_patches(nearest_points_func, similar_patches, coplanarity, number_of_surfaces, positions, surface_patch_points, surfaces, depth_image, join_matrix, relabeling):
@@ -633,7 +641,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
     join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
     join_matrix, concave = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
-                                                                 border_centers, normal_angles, number_of_surfaces, depth_image, join_matrix, surfaces)
+                                                                 border_centers, normal_angles, number_of_surfaces, depth_image, join_matrix, surfaces, points_in_space)
     join_matrix = determine_similar_neighbors(similarity_neighbors, similarity_neighbors_concave, neighbors, join_matrix, number_of_surfaces, concave)
     _, relabeling = join_surfaces_according_to_join_matrix(join_matrix, surfaces.copy(), number_of_surfaces)
     join_matrix, surfaces = determine_occluded_patches(nearest_points_func, similarity_occlusion, coplanarity, number_of_surfaces,

@@ -446,13 +446,6 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
     y_array = angle_values_y*smoothed_depth
     points_in_space = layers.Concatenate()([x_array, y_array, smoothed_depth])
 
-    # factor_x_in = layers.Input(shape=(1,), dtype=tf.float32)
-    # factor_y_in = layers.Input(shape=(1,), dtype=tf.float32)
-    #
-    # zeros = tf.zeros(tf.shape(smoothed_depth))
-    # x_values = tf.multiply(tf.broadcast_to(factor_x, tf.shape(smoothed_depth)), smoothed_depth)
-    # y_values = tf.multiply(tf.broadcast_to(factor_y, tf.shape(smoothed_depth)), smoothed_depth)
-
     pad_1 = tf.pad(points_in_space, [[2, 0], [0, 0], [0, 0]])
     pad_2 = tf.pad(points_in_space, [[0, 2], [0, 0], [0, 0]])
     pad_3 = tf.pad(points_in_space, [[0, 0], [2, 0], [0, 0]])
@@ -460,9 +453,6 @@ def normals_and_log_depth_model_GPU(pool_size=2, height=height, width=width):
 
     sub_1 = tf.subtract(pad_1, pad_2)[1:-1, :, :]
     sub_2 = tf.subtract(pad_4, pad_3)[:, 1:-1, :]
-
-    #concat_1 = layers.Concatenate(axis=-1)([zeros, y_values, sub_1])
-    #concat_2 = layers.Concatenate(axis=-1)([x_values, zeros, sub_2])
 
     vectors = tf.linalg.cross(sub_1, sub_2)
     condition = -tf.cast(tf.greater(tf.gather(vectors, [2], axis=-1), 0), tf.float32)
