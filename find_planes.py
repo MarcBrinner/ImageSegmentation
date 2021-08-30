@@ -85,7 +85,7 @@ def remove_noise(image):
     return image
 
 
-def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, kernel_size=10):
+def train_model_on_images(image_indices, load_index=2, save_index=3, epochs=1, kernel_size=10):
     div_x, div_y = 40, 40
     size_x, size_y = int(width / div_x), int(height / div_y)
 
@@ -94,15 +94,17 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
     surface_model = find_surfaces_model_GPU()
     conv_crf_model = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x)
 
+    grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
+    grid = np.stack([grid[1], grid[0]], axis=-1)
     for epoch in range(epochs):
         for image_index in image_indices:
             print(f"Training on image {image_index}")
 
             depth_image, rgb_image, annotation = load_image(image_index)
-            log_depth, normal_angles, normal_vectors = normals_and_log_depth(depth_image)
-
-            features, grid = extract_features(log_depth, rgb_image, normal_angles)
             smoothed_depth = smoothing_model(depth_image, grid)
+
+            log_depth, angles, vectors, points_in_space = normals_and_log_depth(smoothed_depth)
+            features = extract_features(log_depth, rgb_image, angles, grid)
 
             surfaces = surface_model(smoothed_depth)
 
@@ -124,40 +126,43 @@ def train_model_on_images(image_indices, load_index=-1, save_index=2, epochs=1, 
 
             save_parameters(conv_crf_model, save_index)
 
-def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
-    div_x, div_y = 40, 40
+def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
+    div_x, div_y = 6, 6
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
     normals_and_log_depth = normals_and_log_depth_model_GPU()
     surface_model = find_surfaces_model_GPU()
     conv_crf_model = conv_crf_depth(*load_parameters(load_index), kernel_size, size_y, size_x)
+    print_parameters(conv_crf_model)
     print(*load_parameters(load_index))
+
     results = []
+    grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
+    grid = np.stack([grid[1], grid[0]], axis=-1)
     for index in image_indices:
         print(index)
         depth_image, rgb_image, annotation = load_image(index)
 
         t = time.time()
-        log_depth, angles, vectors, points = normals_and_log_depth(depth_image)
-        #normal_vectors = calculate_normals.calculate_normals_cross_product(depth_image)
-        #print()
-        features, grid = extract_features(log_depth, rgb_image, angles)
         smoothed_depth = smoothing_model(depth_image, grid)
+        log_depth, angles, vectors, points_in_space = normals_and_log_depth(smoothed_depth)
+        features = extract_features(log_depth, rgb_image, angles, grid)
 
-        surfaces = surface_model(smoothed_depth)
+        surfaces, depth_edges = surface_model(smoothed_depth)
+        #plot_surfaces(surfaces, False)
         number_of_surfaces = int(np.max(surfaces) + 1)
-        unary_potentials, initial_Q = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
+        unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
 
         data = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y)
         out = conv_crf_model.predict(data, batch_size=1)
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
-        Q[depth_image == 0] = 0
+        Q[depth_image == 0] = prob
 
         data = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
         out = conv_crf_model.predict(data, batch_size=1)
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, number_of_surfaces)
-        Q[depth_image == 0] = 0
+        Q[depth_image == 0] = prob
 
         data = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
         out = conv_crf_model.predict(data, batch_size=1)
@@ -173,15 +178,19 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=10):
         np.save(f"out/{index}/angles.npy", angles)
         np.save(f"out/{index}/vectors.npy", vectors)
         np.save(f"out/{index}/patches.npy", surfaces)
-        np.save(f"out/{index}/points.npy", points)
+        np.save(f"out/{index}/points.npy", points_in_space)
+        np.save(f"out/{index}/edges.npy", depth_edges)
         #return Q, depth_image, angles
     return results
 
-@njit()
 def get_unary_potentials_and_initial_probabilities(surface_image, number_of_labels):
     height, width = np.shape(surface_image)
-    unary_potentials = np.zeros((height, width, number_of_labels))
-    initial_probabilities = np.zeros((height, width, number_of_labels))
+    potential = np.ones((1, 1, number_of_labels))
+    potential[0] = 10
+    unary_potentials = np.tile(potential, [height, width, 1])
+    prob = np.ones((1, 1, number_of_labels)) / (number_of_labels - 1)
+    prob[0] = 0
+    initial_probabilities = np.tile(prob, [height, width, 1])
     for y in range(height):
         for x in range(width):
             if surface_image[y][x] != 0:
@@ -193,18 +202,14 @@ def get_unary_potentials_and_initial_probabilities(surface_image, number_of_labe
                 prob[surface_image[y][x]] = 0.9
                 prob[0] = 0
                 initial_probabilities[y][x] = prob
-    return unary_potentials, initial_probabilities
+    return unary_potentials, initial_probabilities, prob
 
-def extract_features(depth_image, lab_image, angles):
-    height, width = np.shape(depth_image)
-    grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
-
-    grid = np.stack([grid[1], grid[0]], axis=-1)
+def extract_features(depth_image, lab_image, angles, grid):
     features_1_new = np.concatenate([grid, np.expand_dims(depth_image, axis=-1)], axis=-1)
     features_2_new = np.concatenate([features_1_new, lab_image], axis=-1)
     features_3_new = np.concatenate([features_1_new, angles], axis=-1)
 
-    return (features_1_new, features_2_new, features_3_new), grid
+    return (features_1_new, features_2_new, features_3_new)
 
 def plot_surfaces(Q, max=True):
     if max:
@@ -219,6 +224,6 @@ if __name__ == '__main__':
     #train_model_on_images(train_indices)
     #test_model_on_image([0], load_index=2)
     #quit()
-    test_model_on_image(list(range(111)), load_index=2)
+    test_model_on_image(list(range(105, 111)), load_index=-1)
     quit() # 40, 99
 
