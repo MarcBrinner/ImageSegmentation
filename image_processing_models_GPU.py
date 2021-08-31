@@ -463,7 +463,7 @@ def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
     model = Model(inputs=depth_image, outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals, points_in_space])
     return lambda image: model.predict(image, batch_size=height)
 
-def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 11, height=height, width=width, alpha=20, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
+def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 11, height=height, width=width, alpha=3, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
     # Find curvature score edges
     depth_image_in = layers.Input(batch_shape=(1, height, width))
     depth_image = tf.expand_dims(tf.squeeze(depth_image_in, axis=0), axis=-1)
@@ -514,7 +514,7 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 11, height
 
     distance_factors = layers.Concatenate(axis=-1)([distance_factors_x, distance_factors_x, distance_factors_y, distance_factors_y]) * alpha
     edges = tf.pad(tf.reduce_min(tf.where(tf.greater(diffs, distance_factors), 0, 1), axis=-1), [[1, 1], [1, 1]], constant_values=0)
-    #pixels = tf.multiply(edges, pixels)
+    pixels = tf.multiply(edges, pixels)
 
     components = Components()(pixels)
     counts = Counts()(components)
