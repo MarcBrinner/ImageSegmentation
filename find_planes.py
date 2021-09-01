@@ -127,7 +127,7 @@ def train_model_on_images(image_indices, load_index=2, save_index=3, epochs=1, k
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
-    div_x, div_y = 40, 40
+    div_x, div_y = 4, 4
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
