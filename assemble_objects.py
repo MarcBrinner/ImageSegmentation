@@ -264,7 +264,7 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
             v1 = np.dot(diff, normal_1)
             v2 = np.dot(diff, normal_2)
 
-            if v1 - v2 > 0:
+            if v1 - v2 > 0.05:
                 convexity[i][surface_2] = 1
                 convexity[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -451,9 +451,7 @@ def determine_occlusion(candidates, closest_points, surfaces, number_of_surfaces
         index_1 += 1
 
     for i in range(number_of_surfaces):
-        i = 17
         for j in range(i+1, number_of_surfaces):
-            j = 33
             if candidates[i][j] == 0:
                 continue
             l_1 = relabeling[i]
@@ -584,7 +582,7 @@ def determine_occluded_patches(nearest_points_func, similar_patches, coplanarity
     return join_matrix, new_surfaces
 
 def get_GPU_models():
-    return chi_squared_distances_model((8, 8), (4, 4)), \
+    return chi_squared_distances_model((10, 10), (4, 4)), \
            chi_squared_distances_model((4, 4), (1, 1)), \
            chi_squared_distances_model_1D(), \
            extract_texture_function(), \
@@ -601,7 +599,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
     average_positions, histogram_color, histogram_angles, histogram_texture, centroids, average_normals, centroid_indices, surfaces, planes \
         = extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space)
-    plot_surfaces(patches, False)
+    plot_surfaces(surfaces, False)
 
     color_similarities = color_similarity_model(histogram_color)
     angle_similarities = angle_similarity_model(histogram_angles)
