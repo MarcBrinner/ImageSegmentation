@@ -150,6 +150,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         features = extract_features(log_depth, rgb_image, angles, grid)
 
         surfaces, depth_edges = surface_model(smoothed_depth)
+        plot_surfaces(surfaces, False)
         #plot_surfaces(surfaces, False)
         number_of_surfaces = int(np.max(surfaces) + 1)
         unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
@@ -170,7 +171,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        #plot_surfaces(Q)
+        plot_surfaces(Q)
         results.append(Q)
         os.makedirs(f"out/{index}", exist_ok=True)
         np.save(f"out/{index}/Q.npy", Q)
@@ -224,5 +225,5 @@ if __name__ == '__main__':
     #train_model_on_images(train_indices)
     #test_model_on_image([0], load_index=2)
     #quit()
-    test_model_on_image(list(range(105, 111)), load_index=-1)
+    test_model_on_image(list(range(107, 111)), load_index=-1)
     quit()
