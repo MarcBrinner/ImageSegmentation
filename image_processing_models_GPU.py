@@ -522,7 +522,7 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 11, height
     pixels = pixels * tf.reshape(tf.gather(tf.where(tf.greater(counts, component_threshold), 1, 0), tf.reshape(components, (height*width,))), (height, width))
     pixels = Components()(pixels)
 
-    model = Model(inputs=depth_image_in, outputs=[pixels, edges])
+    model = Model(inputs=depth_image_in, outputs=[pixels, edges, curvature_scores])
 
     return lambda x: model.predict(np.expand_dims(x, axis=0), batch_size=1)
 

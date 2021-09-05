@@ -126,8 +126,24 @@ def train_model_on_images(image_indices, load_index=2, save_index=3, epochs=1, k
 
             save_parameters(conv_crf_model, save_index)
 
+def calc_average_scores(number_of_surfaces, patches, scores):
+    counter = np.zeros(number_of_surfaces)
+    score_sum = np.zeros(number_of_surfaces)
+    for y in range(1, height-1):
+        for x in range(1, width-1):
+            s = int(patches[y][x])
+            score_sum[s] += scores[y][x]
+            counter[s] += 1
+    counter[counter == 0] = 1
+    score_sum = score_sum/counter
+
+    d = {i: score_sum[i] for i in range(number_of_surfaces)}
+
+    for i, v in sorted(d.items(), key=lambda x: x[1]):
+        print(f"{i}: {score_sum[i]}")
+
 def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
-    div_x, div_y = 4, 4
+    div_x, div_y = 40, 40
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -149,7 +165,15 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         log_depth, angles, vectors, points_in_space = normals_and_log_depth(smoothed_depth)
         features = extract_features(log_depth, rgb_image, angles, grid)
 
-        surfaces, depth_edges = surface_model(smoothed_depth)
+        surfaces, depth_edges, scores = surface_model(smoothed_depth)
+        scores = np.pad(scores, [[4, 4], [4, 4]])
+        calc_average_scores(int(np.max(surfaces) + 1), surfaces, scores)
+        plot_surfaces(surfaces, False)
+        scores[scores < 0] = 0
+        scores[scores > np.max(scores)/5555] = 0
+        scores = np.asarray(scores / np.max(scores) * 255, dtype="int32")
+        plot_image.plot_array_PLT(scores)
+        quit()
         plot_surfaces(surfaces, False)
         #plot_surfaces(surfaces, False)
         number_of_surfaces = int(np.max(surfaces) + 1)
@@ -225,5 +249,5 @@ if __name__ == '__main__':
     #train_model_on_images(train_indices)
     #test_model_on_image([0], load_index=2)
     #quit()
-    test_model_on_image(list(range(107, 111)), load_index=-1)
+    test_model_on_image(list(range(108, 111)), load_index=-1)
     quit()
