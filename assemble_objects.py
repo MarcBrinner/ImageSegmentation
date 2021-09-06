@@ -277,7 +277,7 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
 
             above, below = determine_convexity_with_above_and_below_line(normal_1, normal_2, space_point_1, space_point_2, c_1, c_2, points_in_space)
 
-            if v1 - v2 > 0.05 and above > below*1.3:
+            if (v1 - v2 > 0.05 and above > below*1.3) or (v1 - v2 > 0.2 and above >= below):
                 if not connected:
                     continue
                 convex[i][surface_2] = 1
@@ -321,7 +321,7 @@ def determine_similar_patches(texture_similarities, color_similarities, normal_s
 
     similar_patches_5 = np.zeros_like(texture_similarities)
     similar_patches_5[color_similarities < thresholds[4][1]] = 1
-    similar_patches_5[texture_similarities > thresholds[4][2]] = 0
+    similar_patches_5[texture_similarities > thresholds[4][0]] = 0
     similar_patches_5[texture_similarities + color_similarities > thresholds[4][2]] = 0
     similar_patches_5[planes == 1, :] = 0
     similar_patches_5[:, planes == 1] = 0
@@ -444,6 +444,15 @@ def determine_occlusion_line_points(similarities, number_of_surfaces, centroids,
 
     return points_inputs, centroid_inputs
 
+def depth_extend_distance(i, j, depth_extends):
+    d_1 = depth_extends[i]
+    d_2 = depth_extends[j]
+    if d_2[0] <= d_1[0] <= d_2[1] or d_2[0] <= d_1[1] <= d_2[1] or d_1[0] <= d_2[0] <= d_1[1]:
+        return 0
+    if d_1[0] > d_2[1]:
+        return d_1[0] - d_2[1]
+    return d_2[0] - d_1[1]
+
 def determine_occlusion(candidates, candidates_occlusion, closest_points, surfaces, number_of_surfaces, points_in_space, relabeling, candidates_curved, coplanarity, norm_image, depth_extend):
     join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
     closest_points_array = np.zeros((number_of_surfaces, number_of_surfaces, 2), dtype="int32")
@@ -519,18 +528,19 @@ def determine_occlusion(candidates, candidates_occlusion, closest_points, surfac
 
             occluded = True
 
-            index_dif = 1 / (index_2 - index_1) * d_dif
+            if index_1 != index_2:
+                index_dif = 1 / (index_2 - index_1) * d_dif
 
-            for k in range(index_2 - index_1 - 1):
-                p = positions[index_1 + k + 1]
-                v_1 = np.linalg.norm(points_in_space[p[1]][p[0]])
-                v_2 = k * index_dif + d_1
-                if norm_image[p[1]][p[0]] > k * index_dif + d_1:
-                    occluded = False
-                    break
+                for k in range(index_2 - index_1 - 1):
+                    p = positions[index_1 + k + 1]
+                    v_1 = np.linalg.norm(points_in_space[p[1]][p[0]])
+                    v_2 = k * index_dif + d_1
+                    if norm_image[p[1]][p[0]] > k * index_dif + d_1:
+                        occluded = False
+                        break
 
-            if (abs(index_2 - index_1) > 8 or min(abs(depth_extend[i][0] - depth_extend[j][1]), abs(depth_extend[i][1] - depth_extend[j][0])) > 30)\
-                    and (coplanarity[i][j] == 0 and candidates_occlusion[i][j] == 0 and candidates_curved[i][j] == 1):
+            if (coplanarity[i][j] == 0 and candidates_occlusion[i][j] == 0 and candidates_curved[i][j] == 1) and\
+                    (abs(index_2 - index_1) > 8 or depth_extend_distance(i, j, depth_extend) > 30):
                 occluded = False
             if occluded:
                 join_matrix[i][j] = 1
@@ -719,7 +729,6 @@ def texture_similarity_calc(texture_vecs, number_of_surfaces):
 
 def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces, patches, models, vectors, points_in_space, depth_edges):
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
-    plot_surfaces(patches, False)
 
     average_positions, histogram_color, histogram_angles, histogram_texture, centroids,\
     average_normals, centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend \
@@ -732,7 +741,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
     similarities_texture = texture_similarity_calc(histogram_texture, number_of_surfaces)
 
     sim_neighbors, sim_neighbors_concave, sim_occlusion, sim_occlusion_coplanar, sim_curved\
-        = determine_similar_patches(similarities_texture, similarities_color, similarities_angle, [(0.6, 0.6), (0, 0), (0.5, 0.5, 5), (0.8, 1.0, 5), (0.8, 0.7, 1.05)], neighbors, planes)
+        = determine_similar_patches(similarities_texture, similarities_color, similarities_angle, [(0.6, 0.6), (0, 0), (0.5, 0.5, 5), (0.8, 1.0, 5.5), (0.8, 0.7, 1.05)], neighbors, planes)
     coplanarity = determine_coplanarity(sim_occlusion_coplanar, number_of_surfaces, centroids, average_normals, planes)
 
     #concave = np.zeros_like(join_matrix)
@@ -753,7 +762,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
 def main():
     models = get_GPU_models()
-    for index in list(range(109, 111)):
+    for index in list(range(27, 111)):
         print(index)
         depth, rgb, annotation = load_image(index)
         lab = rgb_to_Lab(rgb)
