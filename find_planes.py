@@ -126,22 +126,6 @@ def train_model_on_images(image_indices, load_index=2, save_index=3, epochs=1, k
 
             save_parameters(conv_crf_model, save_index)
 
-def calc_average_scores(number_of_surfaces, patches, scores):
-    counter = np.zeros(number_of_surfaces)
-    score_sum = np.zeros(number_of_surfaces)
-    for y in range(1, height-1):
-        for x in range(1, width-1):
-            s = int(patches[y][x])
-            score_sum[s] += scores[y][x]
-            counter[s] += 1
-    counter[counter == 0] = 1
-    score_sum = score_sum/counter
-
-    d = {i: score_sum[i] for i in range(number_of_surfaces)}
-
-    for i, v in sorted(d.items(), key=lambda x: x[1]):
-        print(f"{i}: {score_sum[i]}")
-
 def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
     div_x, div_y = 4, 4
     size_x, size_y = int(width / div_x), int(height / div_y)

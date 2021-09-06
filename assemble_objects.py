@@ -1,13 +1,4 @@
-import math
-
-import numba.roc.hsadrv.driver
-import numpy as np
 import tensorflow as tf
-import find_edges
-import matplotlib.pyplot as plt
-import load_pcd
-import plot_image
-import itertools
 from standard_values import *
 from image_operations import rgb_to_Lab
 from tensorflow.keras import layers, Model
@@ -16,12 +7,12 @@ from numba import njit
 from load_images import *
 from find_planes import plot_surfaces
 from image_processing_models_GPU import calculate_nearest_point_function, extract_texture_function
-from sklearn.cluster import KMeans
 
 
 train_indices = [109, 108, 107, 105, 104, 103, 102, 101, 100, 99, 98, 97, 96, 95, 94]
+number_of_surfaces = 0
 
-@njit()
+#@njit()
 def remove_disconnected_components(surfaces, centroid_indices):
     connected_indices = np.zeros_like(surfaces)
     for i in range(len(centroid_indices)):
@@ -44,12 +35,11 @@ def remove_disconnected_components(surfaces, centroid_indices):
     return surfaces
 
 #@njit()
-def determine_neighbors_with_border_centers_calc(surfaces, number_of_surfaces, depth_edges):
+def determine_neighbors_with_border_centers_calc(surfaces, depth_edges):
     height, width = np.shape(surfaces)
     neighbors = np.zeros((number_of_surfaces, number_of_surfaces))
     border_centers = np.zeros((number_of_surfaces, number_of_surfaces, 2))
-    new_surfaces = surfaces.copy() * depth_edges#(np.ones_like(depth_edges) - depth_edges)
-    #plot_surfaces(new_surfaces, False)
+    new_surfaces = surfaces.copy() * depth_edges
     for y in range(height):
         for x in range(width):
             if depth_edges[y][x] == 0 or surfaces[y][x] == 0:
@@ -77,7 +67,7 @@ def determine_neighbors_with_border_centers_calc(surfaces, number_of_surfaces, d
         neighbors[i][i] = 0
         border_centers[i][i] = 0
         for j in range(i+1, number_of_surfaces):
-            if neighbors[i][j] < 5:
+            if neighbors[i][j] < 4:
                 neighbors[i][j] = 0
                 neighbors[j][i] = 0
     border_centers = np.divide(border_centers, 2*np.expand_dims(neighbors, axis=-1))
@@ -90,31 +80,27 @@ def determine_neighbors_with_border_centers_calc(surfaces, number_of_surfaces, d
                 current_list.append(j)
 
         neighbors_list.append(current_list)
-
     return neighbors_list, border_centers
 
-def determine_centroids(positions, average_positions, points_in_space):
-    positions = [np.asarray(p) for p in positions]
+def determine_neighbors_with_border_centers(*args):
+    neighbors, border_centers = determine_neighbors_with_border_centers_calc(*args)
+    border_centers[np.isnan(border_centers)] = 0
+    return neighbors, border_centers
+
+def determine_centroids(surface_patch_points, average_positions, points_in_space):
     centroids = []
     centroid_indices = []
-    for i in range(len(positions)):
-        if len(positions[i]) == 0:
+    for i in range(len(surface_patch_points)):
+        if len(surface_patch_points[i]) == 0:
             centroids.append([-1, -1])
             continue
-        point = positions[i][np.argmin(np.sum(np.square(positions[i] - average_positions[i]), axis=-1))]
-        #centroids.append([point[0], point[1], depth_image[point[1]][point[0]]])
+        point = surface_patch_points[i][np.argmin(np.sum(np.square(surface_patch_points[i] - average_positions[i]), axis=-1))]
         centroids.append(points_in_space[point[1]][point[0]])
         centroid_indices.append([point[1], point[0]])
-    return np.asarray(centroids), centroid_indices
+    return centroids, centroid_indices
 
-
-def determine_neighbors_with_border_centers(*args):
-    neighbor_list, border_centers = determine_neighbors_with_border_centers_calc(*args)
-    border_centers[np.isnan(border_centers)] = 0
-    return neighbor_list, border_centers
-
-@njit()
-def extract_points(surface_patches, number_of_surfaces):
+#@njit()
+def extract_points(surface_patches):
     points = []
     for i in range(number_of_surfaces):
         points.append([[0, 0]])
@@ -138,41 +124,6 @@ def prepare_border_centers(neighbors, border_centers):
         result.append(current_list)
     return result
 
-@njit()
-def determine_neighbors(surfaces, number_of_surfaces, depth_edges):
-    height, width = np.shape(surfaces)
-    neighbors = np.zeros((number_of_surfaces, number_of_surfaces))
-    new_surfaces = surfaces.copy() * (np.ones_like(depth_edges) - depth_edges)
-    for y in range(height):
-        for x in range(width):
-            if depth_edges[y][x] == 1:
-                continue
-            index = new_surfaces[y][x]
-            if y < height - 1:
-                other_index = new_surfaces[y + 1][x]
-                neighbors[index][other_index] += 1
-                neighbors[other_index][index] += 1
-            if x < width - 1:
-                other_index = new_surfaces[y][x + 1]
-                neighbors[index][other_index] += 1
-                neighbors[other_index][index] += 1
-    for i in range(number_of_surfaces):
-        for j in range(i+1, number_of_surfaces):
-            if neighbors[i][j] < 5:
-                neighbors[i][j] = 0
-                neighbors[j][i] = 0
-    neighbors_list = []
-    for i in range(number_of_surfaces):
-        current_list = []
-        for j in range(1, number_of_surfaces):
-            if neighbors[i][j] > 0:
-                current_list.append(j)
-        if i in current_list:
-            current_list.remove(i)
-        neighbors_list.append(current_list)
-
-    return neighbors_list
-
 def angles_to_normals(angles):
     n, _ = np.shape(angles)
     normals = np.zeros((n, 3))
@@ -188,8 +139,8 @@ def angles_to_normals(angles):
         normals[i] = vec
     return normals
 
-@njit()
-def calc_average_position_and_counts(index_image, number_of_surfaces):
+#@njit()
+def calc_average_position_and_counts(index_image):
     height, width = np.shape(index_image)
     counter = np.zeros((number_of_surfaces, 1))
     positions = []
@@ -211,6 +162,7 @@ def calc_average_position_and_counts(index_image, number_of_surfaces):
 def swap_values(vec):
     return np.asarray([vec[1], vec[0], vec[2]])
 
+#@njit()
 def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_point_1, space_point_2, c_1, c_2, points_in_space):
     normal_direction = normal_1 + normal_2 / 2
     normal_direction = normal_direction / np.linalg.norm(normal_direction)
@@ -232,7 +184,7 @@ def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_poin
             below += 1
     return above, below
 
-def determine_convexity_with_closest_points(angles, closest_points, neighbors, number_of_surfaces, surfaces, points_in_space, coplanarity):
+def determine_convexity_with_closest_points(angles, closest_points, neighbors, surfaces, points_in_space, coplanarity):
     convex = np.zeros((number_of_surfaces, number_of_surfaces))
     concave = np.zeros((number_of_surfaces, number_of_surfaces))
     new_surfaces = surfaces.copy()
@@ -275,7 +227,8 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, n
             v1 = np.dot(diff, normal_1)
             v2 = np.dot(diff, normal_2)
 
-            above, below = determine_convexity_with_above_and_below_line(normal_1, normal_2, space_point_1, space_point_2, c_1, c_2, points_in_space)
+            above, below = determine_convexity_with_above_and_below_line(np.asarray(normal_1, dtype="float32"), np.asarray(normal_2, dtype="float32"),
+                                                                         space_point_1, space_point_2, c_1, c_2, points_in_space)
 
             if (v1 - v2 > 0.05 and above > below*1.3) or (v1 - v2 > 0.2 and above >= below):
                 if not connected:
@@ -333,40 +286,42 @@ def determine_similar_patches(texture_similarities, color_similarities, normal_s
 
     return similar_patches_1, similar_patches_2, similar_patches_3, similar_patches_4, similar_patches_5
 
-def join_similar_neighbors(similar_patches, more_similar_patches, neighbors, number_of_surfaces, concave):
-    join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
+#@njit()
+def join_similar_neighbors(candidates_if_not_concave, candidates_if_concave, neighbors, concave):
     similar_neighbors = np.zeros((number_of_surfaces, number_of_surfaces))
     for s_1 in range(number_of_surfaces):
         for s_2 in range(s_1 + 1, number_of_surfaces):
             if s_2 in neighbors[s_1]:
-                if similar_patches[s_1][s_2] == 1 and concave[s_1][s_2] == 0:
+                if candidates_if_not_concave[s_1][s_2] == 1 and concave[s_1][s_2] == 0:
                     similar_neighbors[s_1][s_2] = 1
                     similar_neighbors[s_2][s_1] = 1
-                elif more_similar_patches[s_1][s_2]:
+                elif candidates_if_concave[s_1][s_2]:
                     similar_neighbors[s_1][s_2] = 1
                     similar_neighbors[s_2][s_1] = 1
-    return join_matrix
+    return similar_neighbors
 
-def join_surfaces_according_to_join_matrix(join_matrix, surfaces, number_of_surfaces):
-    join_matrix[join_matrix > 1] = 1
+def join_surfaces_according_to_join_matrix(join_matrix, surfaces):
     labels = np.arange(number_of_surfaces)
     for i in range(number_of_surfaces):
         for j in range(i + 1, number_of_surfaces):
-            if join_matrix[i][j] == 1:
+            if join_matrix[i][j] >= 1:
                 surfaces[surfaces == labels[j]] = labels[i]
                 labels[j] = labels[i]
     return surfaces, labels
 
-def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfaces, pixels_per_surface, texture_image, patches):
+#@njit()
+def color_and_angle_histograms(lab_image, angle_image, surfaces, texture_image, patches):
     histograms_color = np.zeros((256, 256, number_of_surfaces))
     histograms_angles = np.zeros((40, 40, number_of_surfaces))
     histograms_texture = np.zeros((number_of_surfaces, 256))
-    normalized_angles = np.asarray((angle_image / (2*np.pi) + 0.5) * 39, dtype="uint8")
-    inverse_pixel = np.ones(number_of_surfaces)*10/np.squeeze(pixels_per_surface, axis=-1)
-    height, width = np.shape(surfaces)
+
+    normalized_angles = (angle_image / (2*np.pi) + 0.5) * 39
+
     counts = np.zeros(number_of_surfaces)
     all_angles_sum = np.zeros((number_of_surfaces, 2))
     patch_counter = np.zeros(number_of_surfaces)
+    to_int = lambda x: (int(x[0]), int(x[1]))
+    to_rounded_int = lambda x: (round(x[0]), round(x[1]), round(x[2]))
     for y in range(height):
         for x in range(width):
 
@@ -374,15 +329,15 @@ def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfa
             if s < 0.0001:
                 continue
 
-            l, a, b = np.round(lab_image[y][x] + 127)
+            l, a, b = to_rounded_int(lab_image[y][x] + 127)
 
-            histograms_color[int(a)][int(b)][s] += inverse_pixel[s]
+            histograms_color[int(a)][int(b)][s] += 1
 
             s = patches[y][x]
             if s < 0.0001:
                 continue
 
-            a_1, a_2 = normalized_angles[y][x]
+            a_1, a_2 = to_int(normalized_angles[y][x])
             histograms_angles[a_1][a_2][s] += 1
             all_angles_sum[s] += angle_image[y][x]
             patch_counter[s] += 1
@@ -393,6 +348,11 @@ def color_and_angle_histograms(lab_image, angle_image, surfaces, number_of_surfa
                 texture = texture_image[new_y][new_x]
                 histograms_texture[s] += texture
                 counts[s] += 1
+    norm = np.expand_dims(np.expand_dims(np.sum(np.sum(histograms_color, axis=0), axis=0)/10, axis=0), axis=0)
+    for i in range(number_of_surfaces):
+        if norm[0][0][i] == 0:
+            norm[0][0][i] = 1
+    histograms_color = histograms_color/norm
 
     patch_counter[patch_counter == 0] = 1
     all_angles_sum = all_angles_sum / np.expand_dims(patch_counter, axis=-1)
@@ -429,7 +389,7 @@ def chi_squared_distances_model_1D():
     return lambda histogram: model.predict(np.asarray([histogram]))
 
 
-def determine_occlusion_line_points(similarities, number_of_surfaces, centroids, surface_points):
+def determine_occlusion_line_points(similarities, centroids, surface_points):
     centroid_inputs = []
     points_inputs = []
 
@@ -453,7 +413,7 @@ def depth_extend_distance(i, j, depth_extends):
         return d_1[0] - d_2[1]
     return d_2[0] - d_1[1]
 
-def determine_occlusion(candidates, candidates_occlusion, closest_points, surfaces, number_of_surfaces, points_in_space, relabeling, candidates_curved, coplanarity, norm_image, depth_extend):
+def determine_occlusion(candidates, candidates_occlusion, closest_points, surfaces, points_in_space, relabeling, candidates_curved, coplanarity, norm_image, depth_extend):
     join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
     closest_points_array = np.zeros((number_of_surfaces, number_of_surfaces, 2), dtype="int32")
     new_surfaces = surfaces.copy()
@@ -558,7 +518,7 @@ def nan_and_inf_to_zero(array):
     array[np.isinf(array)] = 0
     return array
 
-def find_even_planes(angle_histogram, number_of_surfaces):
+def find_even_planes(angle_histogram):
     angle_histogram_norm = angle_histogram/np.sum(np.sum(angle_histogram, axis=-1, keepdims=True), axis=-2, keepdims=True)
 
     entropy = -np.sum(np.sum(angle_histogram_norm * nan_and_inf_to_zero(np.log(angle_histogram_norm)), axis=-1), axis=-1)
@@ -570,7 +530,7 @@ def find_even_planes(angle_histogram, number_of_surfaces):
     planes[max >= 3] = 1.0
     return planes
 
-def determine_coplanarity(similarities, number_of_surfaces, centroids, average_normals, planes):
+def determine_coplanarity(similarities, centroids, average_normals, planes):
     normal_vectors = angles_to_normals(average_normals)
     coplanarity = np.zeros((number_of_surfaces, number_of_surfaces))
     for i in range(number_of_surfaces):
@@ -591,7 +551,7 @@ def determine_coplanarity(similarities, number_of_surfaces, centroids, average_n
     return coplanarity
 
 def remove_convex_connections_after_occlusion_reasoning(join_matrix_occlusion, join_matrix_before_occlusion, similarity,
-                                                        coplanarity, concave, number_of_surfaces, centroids, depth_image):
+                                                        coplanarity, concave, centroids, depth_image):
     groups = []
     for i in range(number_of_surfaces):
         groups.append(set())
@@ -651,7 +611,7 @@ def remove_convex_connections_after_occlusion_reasoning(join_matrix_occlusion, j
 
     return final_join_matrix
 
-@njit()
+#@njit()
 def relabel_surfaces(surfaces, patches):
     for y in range(height):
         for x in range(width):
@@ -660,7 +620,7 @@ def relabel_surfaces(surfaces, patches):
     return surfaces
 
 @njit()
-def calculate_depth_extend(surfaces, norm_image, number_of_surfaces):
+def calculate_depth_extend(surfaces, norm_image):
     values = np.zeros((number_of_surfaces, 2))
     values[:, 0] = np.inf
     values[:, 1] = -np.inf
@@ -676,41 +636,39 @@ def calculate_depth_extend(surfaces, norm_image, number_of_surfaces):
                 values[s][1] = n
     return values
 
-def extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space, depth_edges):
+def extract_information(rgb_image, texture_model, surfaces, patches, normal_angles, lab_image, depth_image, points_in_space, depth_edges):
     surfaces = relabel_surfaces(surfaces, patches)
-    surface_patch_points = extract_points(patches, number_of_surfaces)
-    average_positions, counts = calc_average_position_and_counts(surfaces, number_of_surfaces)
-    centroids, centroid_indices = determine_centroids(surface_patch_points, average_positions, points_in_space)
+    surface_patch_points = extract_points(patches)
+    average_positions, counts = calc_average_position_and_counts(surfaces)
+    centroids, centroid_indices = determine_centroids([np.asarray(p) for p in surface_patch_points], average_positions, points_in_space)
     surfaces = remove_disconnected_components(surfaces, np.asarray(centroid_indices, dtype="int64"))
     texture = texture_model(rgb_image)
     histogram_color, histogram_angles, histogram_texture, average_normals = color_and_angle_histograms(lab_image, normal_angles,
-                                                                                      surfaces, number_of_surfaces,
-                                                                                      counts, texture, patches)
+                                                                                      surfaces, texture, patches)
 
-    planes = find_even_planes(np.swapaxes(histogram_angles, 2, 0), number_of_surfaces)
-    neighbors, border_centers = determine_neighbors_with_border_centers(surfaces, number_of_surfaces, depth_edges)
+    planes = find_even_planes(np.swapaxes(histogram_angles, 2, 0))
+    neighbors, border_centers = determine_neighbors_with_border_centers(surfaces, depth_edges)
     norm_image = np.linalg.norm(points_in_space, axis=-1)
-    depth_extend = calculate_depth_extend(surfaces, norm_image, number_of_surfaces)
+    depth_extend = calculate_depth_extend(surfaces, norm_image)
     return average_positions, histogram_color, histogram_angles, histogram_texture, centroids, average_normals,\
            centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend
 
-def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles,
-                                          number_of_surfaces, surfaces, points_in_space, coplanarity):
+def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, surfaces, points_in_space, coplanarity):
     nearest_points = nearest_points_func(surface_patch_points, prepare_border_centers(neighbors, border_centers))
     nearest_points = [np.asarray(p.numpy(), dtype="int32") for p in nearest_points]
-    convex, concave, new_surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, number_of_surfaces, surfaces, points_in_space, coplanarity)
+    convex, concave, new_surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, surfaces, points_in_space, coplanarity)
     return convex, concave, new_surfaces
 
 def join_disconnected_patches(nearest_points_func, similar_patches_occlusion, similar_patches_curved, coplanarity,
-                               number_of_surfaces, positions, surface_patch_points, surfaces, points_in_space, relabeling, norm_image, depth_extend):
+                              positions, surface_patch_points, surfaces, points_in_space, relabeling, norm_image, depth_extend):
     candidates = similar_patches_occlusion + coplanarity + similar_patches_curved
     candidates[candidates > 1] = 1
-    input = determine_occlusion_line_points(candidates, number_of_surfaces, positions, surface_patch_points)
+    input = determine_occlusion_line_points(candidates, positions, surface_patch_points)
     if len(input[0]) == 0: return np.zeros((number_of_surfaces, number_of_surfaces)), surfaces
     nearest_points_for_occlusion = nearest_points_func(*input)
     nearest_points_for_occlusion = [np.asarray(p.numpy(), dtype="int32") for p in nearest_points_for_occlusion]
 
-    join_matrix, new_surfaces = determine_occlusion(candidates, similar_patches_occlusion, nearest_points_for_occlusion, surfaces, number_of_surfaces,
+    join_matrix, new_surfaces = determine_occlusion(candidates, similar_patches_occlusion, nearest_points_for_occlusion, surfaces,
                                       points_in_space, relabeling, similar_patches_curved, coplanarity, norm_image, depth_extend)
     return join_matrix, new_surfaces
 
@@ -721,48 +679,50 @@ def get_GPU_models():
            extract_texture_function(), \
            calculate_nearest_point_function()
 
-def texture_similarity_calc(texture_vecs, number_of_surfaces):
+def texture_similarity_calc(texture_vecs):
     vecs_1 = np.tile(np.expand_dims(texture_vecs, axis=0), [number_of_surfaces, 1, 1])
     vecs_2 = np.tile(np.expand_dims(texture_vecs, axis=1), [1, number_of_surfaces, 1])
     diff = vecs_1 - vecs_2
     return np.linalg.norm(diff, axis=-1)/256
 
-def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces, patches, models, vectors, points_in_space, depth_edges):
+def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces_in, patches, models, vectors, points_in_space, depth_edges):
+    global number_of_surfaces
+    number_of_surfaces = number_of_surfaces_in
+
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
 
     average_positions, histogram_color, histogram_angles, histogram_texture, centroids,\
     average_normals, centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend \
-        = extract_information(rgb_image, texture_model, surfaces, patches, number_of_surfaces, normal_angles, lab_image, depth_image, points_in_space, depth_edges)
+        = extract_information(rgb_image, texture_model, surfaces, patches, normal_angles, lab_image, depth_image, points_in_space, depth_edges)
 
     plot_surfaces(surfaces, False)
 
     similarities_color = color_similarity_model(histogram_color)
     similarities_angle = angle_similarity_model(histogram_angles)
-    similarities_texture = texture_similarity_calc(histogram_texture, number_of_surfaces)
+    similarities_texture = texture_similarity_calc(histogram_texture)
 
     sim_neighbors, sim_neighbors_concave, sim_occlusion, sim_occlusion_coplanar, sim_curved\
         = determine_similar_patches(similarities_texture, similarities_color, similarities_angle, [(0.6, 0.6), (0, 0), (0.5, 0.5, 5), (0.8, 1.0, 5.5), (0.8, 0.7, 1.05)], neighbors, planes)
-    coplanarity = determine_coplanarity(sim_occlusion_coplanar, number_of_surfaces, centroids, average_normals, planes)
+    coplanarity = determine_coplanarity(sim_occlusion_coplanar, centroids, average_normals, planes)
 
     #concave = np.zeros_like(join_matrix)
     join_matrix_convexity, concave, new_surfaces = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
-                                                                 border_centers, normal_angles, number_of_surfaces, surfaces, points_in_space, coplanarity)
+                                                                 border_centers, normal_angles, surfaces, points_in_space, coplanarity)
     #plot_surfaces(new_surfaces, False)
-    join_matrix_neighbors = join_similar_neighbors(sim_neighbors, sim_neighbors_concave, neighbors, number_of_surfaces, concave)
-    _, relabeling = join_surfaces_according_to_join_matrix(join_matrix_convexity+join_matrix_neighbors, surfaces.copy(), number_of_surfaces)
-    join_matrix_occlusion, surfaces = join_disconnected_patches(nearest_points_func, sim_occlusion, sim_curved, coplanarity, number_of_surfaces,
-                                                       average_positions, surface_patch_points, surfaces, points_in_space, relabeling, norm_image, depth_extend)
+    _, relabeling = join_surfaces_according_to_join_matrix(join_matrix_convexity, surfaces.copy())
+    join_matrix_occlusion, surfaces = join_disconnected_patches(nearest_points_func, sim_occlusion, sim_curved, coplanarity, average_positions,
+                                                                surface_patch_points, surfaces, points_in_space, relabeling, norm_image, depth_extend)
 
-    join_matrix_final = remove_convex_connections_after_occlusion_reasoning(join_matrix_occlusion, join_matrix_convexity+join_matrix_neighbors,
+    join_matrix_final = remove_convex_connections_after_occlusion_reasoning(join_matrix_occlusion, join_matrix_convexity,
                                                                       similarities_color + similarities_texture, coplanarity, concave,
-                                                                      number_of_surfaces, centroids, depth_image)
+                                                                      centroids, depth_image)
 
-    surfaces, _ = join_surfaces_according_to_join_matrix(join_matrix_final, surfaces, number_of_surfaces)
+    surfaces, _ = join_surfaces_according_to_join_matrix(join_matrix_final, surfaces)
     plot_surfaces(surfaces, False)
 
 def main():
     models = get_GPU_models()
-    for index in list(range(27, 111)):
+    for index in list(range(105, 111)):
         print(index)
         depth, rgb, annotation = load_image(index)
         lab = rgb_to_Lab(rgb)
