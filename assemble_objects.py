@@ -2,6 +2,7 @@ import time
 
 import numba
 import numpy as np
+import warnings
 import tensorflow as tf
 from standard_values import *
 from image_operations import rgb_to_Lab
@@ -90,11 +91,12 @@ def determine_neighbors_with_border_centers(surfaces, depth_edges, number_of_sur
 def determine_centroids(surface_patch_points, average_positions, points_in_space):
     centroids = []
     centroid_indices = []
+    to_int = lambda x: (int(x[0]), int(x[1]))
     for i in range(len(surface_patch_points)):
         if len(surface_patch_points[i]) == 0:
             centroids.append([-1, -1])
             continue
-        point = surface_patch_points[i][np.argmin(np.sum(np.square(surface_patch_points[i] - average_positions[i]), axis=-1))]
+        point = to_int(surface_patch_points[i][np.argmin(np.sum(np.square(surface_patch_points[i] - average_positions[i]), axis=-1))])
         centroids.append(points_in_space[point[1]][point[0]])
         centroid_indices.append([point[1], point[0]])
     return np.asarray(centroids), centroid_indices
@@ -111,7 +113,7 @@ def extract_points(surface_patches, number_of_surfaces):
 
     for i in range(number_of_surfaces):
         del points[i][0]
-    return [np.asarray(p, dtype="int32") for p in points]
+    return [np.asarray(p, dtype="float32") for p in points]
 
 def prepare_border_centers(neighbors, border_centers):
     result = []
@@ -121,7 +123,7 @@ def prepare_border_centers(neighbors, border_centers):
             current_list.append(border_centers[i][neighbor])
         if len(current_list) == 0:
             current_list.append(np.asarray([0, 0]))
-        result.append(np.asarray(current_list, dtype="int32"))
+        result.append(np.asarray(current_list, dtype="float32"))
     return result
 
 def angles_to_normals(angles):
@@ -184,11 +186,12 @@ def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_poin
             below += 1
     return above, below
 
-def determine_convexity_with_closest_points(angles, closest_points, neighbors, surfaces, points_in_space, coplanarity):
+def determine_convexity_with_closest_points(angles, closest_points, neighbors, surfaces, points_in_space, coplanarity, norm_image):
     convex = np.zeros((number_of_surfaces, number_of_surfaces))
     concave = np.zeros((number_of_surfaces, number_of_surfaces))
     new_surfaces = surfaces.copy()
     for i in range(number_of_surfaces):
+        #i = 18
         for j in range(len(neighbors[i])):
             surface_2 = neighbors[i][j]
             index_1 = neighbors[surface_2].index(i)
@@ -202,23 +205,29 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, s
             direction = c_2 - c_1
             length = np.max(np.abs(direction))
             direction = direction / max(length, 1)
-            space_point = points_in_space[c_1[1]][c_1[0]]
+            norm_point = norm_image[c_1[1]][c_1[0]]
             s = surfaces[c_1[1]][c_1[0]]
-            different_surface = False
-            threshold = 2.5
+            threshold = 0.005
+            diff_counter = 0
             for m in range(length + 1):
                 point = [int(p) for p in np.round(c_1 + m * direction)]
                 new_s = surfaces[point[1]][point[0]]
-                if new_s != s:
-                    different_surface = not different_surface
-                new_space_point = points_in_space[point[1]][point[0]]
-                if np.abs(new_space_point[2] - space_point[2]) > threshold*np.linalg.norm(space_point[:2] - new_space_point[:2]):
-                    if s != new_s:
+                new_norm_point = norm_image[point[1]][point[0]]
+                #if s != new_s:
+                 #   print()
+                if np.abs(new_norm_point - norm_point) / (new_norm_point + norm_point) > threshold and s != new_s and new_s != 0:
+                    connected = False
+                    break
+                if new_s not in [i, surface_2]:
+                    if diff_counter >= 1:
                         connected = False
                         break
-                space_point = new_space_point
+                    diff_counter += 1
+                    continue
+                norm_point = new_norm_point
                 s = new_s
-
+            if not connected:
+                continue
             space_point_1 = points_in_space[c_1[1]][c_1[0]]
             space_point_2 = points_in_space[c_2[1]][c_2[0]]
             diff = space_point_1 - space_point_2
@@ -231,8 +240,6 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, s
                                                                          space_point_1, space_point_2, c_1, c_2, points_in_space)
 
             if (v1 - v2 > 0.05 and above > below*1.3) or (v1 - v2 > 0.2 and above >= below):
-                if not connected:
-                    continue
                 convex[i][surface_2] = 1
                 convex[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -262,15 +269,24 @@ def determine_similar_patches(texture_similarities, color_similarities, normal_s
     similar_patches_2[texture_similarities < thresholds[1][0]] = 1
     similar_patches_2[color_similarities > thresholds[1][1]] = 0
 
-    similar_patches_3 = np.zeros_like(texture_similarities)
-    similar_patches_3[color_similarities < thresholds[2][1]] = 1
-    similar_patches_3[texture_similarities > thresholds[2][0]] = 0
-    similar_patches_3[normal_similarities > thresholds[2][2]] = 0
-
     similar_patches_4 = np.zeros_like(texture_similarities)
     similar_patches_4[color_similarities < thresholds[3][1]] = 1
     similar_patches_4[normal_similarities > thresholds[3][2]] = 0
     similar_patches_4[texture_similarities > thresholds[3][0]] = 0
+
+    similar_patches_3 = np.zeros_like(texture_similarities)
+    similar_patches_3[color_similarities < thresholds[2][1]] = 1
+    similar_patches_3[texture_similarities > thresholds[2][0]] = 0
+    similar_patches_3[normal_similarities > thresholds[2][2]] = 0
+    for i in range(number_of_surfaces):
+        if planes[i] == 1:
+            continue
+        for j in range(i + 1, number_of_surfaces):
+            if planes[j] == 1 or similar_patches_4[i][j] == 0 or thresholds[2][3] < normal_similarities[i][j]:
+                continue
+            else:
+                similar_patches_3[i][j] = 1
+                similar_patches_3[j][i] = 1
 
     similar_patches_5 = np.zeros_like(texture_similarities)
     similar_patches_5[color_similarities < thresholds[4][1]] = 1
@@ -407,7 +423,7 @@ def determine_occlusion_line_points(similarities, centroids, surface_points):
                 current_list.append(centroids[j])
         if len(current_list) > 0:
             points_inputs.append(surface_points[i])
-            centroid_inputs.append(np.asarray(current_list, dtype="int32"))
+            centroid_inputs.append(np.asarray(current_list, dtype="float32"))
 
     return points_inputs, centroid_inputs
 
@@ -462,7 +478,7 @@ def determine_occlusion(candidates, candidates_occlusion, closest_points, surfac
             direction = dif / length
 
             positions = np.swapaxes(np.expand_dims(p_1, axis=-1) + np.ndarray.astype(np.round(np.expand_dims(direction, axis=-1) *
-                                    (lambda x: np.stack([x, x]))(np.arange(1, int(np.floor(length))))), dtype="int32"), axis1=0, axis2=1)
+                                    (lambda x: np.stack([x, x]))(np.arange(1, length))), dtype="int32"), axis1=0, axis2=1)
             pos_1 = p_1.copy()
             pos_2 = p_2.copy()
             index_1 = 0
@@ -470,13 +486,11 @@ def determine_occlusion(candidates, candidates_occlusion, closest_points, surfac
             index = 0
             other_index = False
             for p in positions:
-                index += 1
                 s = surfaces[p[1]][p[0]]
                 l = relabeling[s]
                 if s == i:
                     index_1 = index
                     pos_1 = p.copy()
-                    continue
                 elif s == j:
                     index_2 = index
                     pos_2 = p.copy()
@@ -486,6 +500,7 @@ def determine_occlusion(candidates, candidates_occlusion, closest_points, surfac
                     break
                 elif s != 0:
                     other_index = True
+                index += 1
             if (not other_index and (candidates_curved[i][j] == 0) and coplanarity[i][j] == 0):
                 continue
 
@@ -513,11 +528,11 @@ def determine_occlusion(candidates, candidates_occlusion, closest_points, surfac
                 join_matrix[i][j] = 1
                 join_matrix[j][i] = 1
 
-            # for pos1, pos2 in positions:
-            #     if occluded:
-            #         new_surfaces[pos2][pos1] = 0
-            #     else:
-            #         new_surfaces[pos2][pos1] = 30
+            for pos1, pos2 in positions:
+                if occluded:
+                    new_surfaces[pos2][pos1] = 0
+                else:
+                    new_surfaces[pos2][pos1] = 30
     return join_matrix, new_surfaces
 
 def nan_and_inf_to_zero(array):
@@ -663,9 +678,9 @@ def extract_information(rgb_image, texture_model, surfaces, patches, normal_angl
     return average_positions, histogram_color, histogram_angles, histogram_texture, centroids, average_normals,\
            centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend
 
-def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, surfaces, points_in_space, coplanarity):
+def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image):
     nearest_points = nearest_points_func(surface_patch_points, prepare_border_centers(neighbors, border_centers))
-    convex, concave, new_surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, surfaces, points_in_space, coplanarity)
+    convex, concave, new_surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, surfaces, points_in_space, coplanarity, norm_image)
     return convex, concave, new_surfaces
 
 def join_disconnected_patches(nearest_points_func, similar_patches_occlusion, similar_patches_curved, coplanarity,
@@ -691,7 +706,9 @@ def calculate_nearest_points_calc(surface_points, border_centers, max_num):
 
 def calculate_nearest_points(surface_points, border_centers):
     max_num = max([len(a) for a in border_centers])
-    results = calculate_nearest_points_calc(surface_points, border_centers, max_num)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=numba.NumbaPendingDeprecationWarning)
+        results = calculate_nearest_points_calc(surface_points, border_centers, max_num)
     return [results[i][:len(border_centers[i])] for i in range(len(border_centers))]
 
 def get_GPU_models():
@@ -710,25 +727,34 @@ def texture_similarity_calc(texture_vecs):
 def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces_in, patches, models, vectors, points_in_space, depth_edges):
     t = time.time()
     global number_of_surfaces
+    #plot_surfaces(patches, False)
+
     number_of_surfaces = number_of_surfaces_in
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
 
     average_positions, histogram_color, histogram_angles, histogram_texture, centroids,\
     average_normals, centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend \
         = extract_information(rgb_image, texture_model, surfaces, patches, normal_angles, lab_image, depth_image, points_in_space, depth_edges)
+
+    #plot_surfaces(patches, False)
+
     similarities_color = color_similarity_model(histogram_color)
     similarities_angle = angle_similarity_model(histogram_angles)
     similarities_texture = texture_similarity_calc(histogram_texture)
+
     sim_neighbors, sim_neighbors_concave, sim_occlusion, sim_occlusion_coplanar, sim_curved\
-        = determine_similar_patches(similarities_texture, similarities_color, similarities_angle, [(0.6, 0.6), (0, 0), (0.5, 0.5, 5), (0.8, 1.0, 5.5), (0.8, 0.7, 1.05)], neighbors, planes)
+        = determine_similar_patches(similarities_texture, similarities_color, similarities_angle, [(0.6, 0.6), (0, 0), (0.5, 0.5, 5, 2), (0.8, 1.0, 5.5), (0.8, 0.7, 1.05)], neighbors, planes)
+
     coplanarity = determine_coplanarity(sim_occlusion_coplanar, centroids, angles_to_normals(average_normals).astype("float32"), planes, number_of_surfaces)
 
     join_matrix_convexity, concave, new_surfaces = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
-                                                                 border_centers, normal_angles, surfaces, points_in_space, coplanarity)
+                                                                 border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image)
     #plot_surfaces(new_surfaces, False)
     _, relabeling = join_surfaces_according_to_join_matrix(join_matrix_convexity, surfaces.copy(), number_of_surfaces)
-    join_matrix_occlusion, surfaces = join_disconnected_patches(nearest_points_func, sim_occlusion, sim_curved, coplanarity, average_positions,
+    join_matrix_occlusion, new_surfaces = join_disconnected_patches(nearest_points_func, sim_occlusion, sim_curved, coplanarity, average_positions,
                                                                 surface_patch_points, surfaces, points_in_space, relabeling, norm_image, depth_extend)
+    #plot_surfaces(new_surfaces, False)
+
     join_matrix_final = remove_convex_connections_after_occlusion_reasoning(join_matrix_occlusion, join_matrix_convexity,
                                                                       similarities_color + similarities_texture, coplanarity, concave,
                                                                       centroids, depth_image)
@@ -739,7 +765,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
 def main():
     models = get_GPU_models()
-    for index in list(range(108, 111)):
+    for index in list(range(0, 111)):
         print(index)
         depth, rgb, annotation = load_image(index)
         lab = rgb_to_Lab(rgb)

@@ -463,7 +463,7 @@ def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
     model = Model(inputs=depth_image, outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals, points_in_space])
     return lambda image: model.predict(image, batch_size=height)
 
-def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 11, height=height, width=width, alpha=3, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
+def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, height=height, width=width, alpha=3, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
     # Find curvature score edges
     depth_image_in = layers.Input(batch_shape=(1, height, width))
     depth_image = tf.expand_dims(tf.squeeze(depth_image_in, axis=0), axis=-1)
@@ -525,6 +525,26 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 11, height
     model = Model(inputs=depth_image_in, outputs=[pixels, edges])
 
     return lambda x: model.predict(np.expand_dims(x, axis=0), batch_size=1)
+
+def nearest_point_calculations(input):
+    surface_points = tf.expand_dims(input[0].to_tensor(), axis=0)
+    border_centers = tf.expand_dims(input[1].to_tensor(), axis=1)
+    dif = tf.math.reduce_euclidean_norm(tf.subtract(surface_points, border_centers), axis=-1)
+    min = tf.argmin(dif, axis=1)
+    return tf.RaggedTensor.from_tensor(tf.squeeze(tf.gather(surface_points, min, axis=1), axis=0))
+
+def nearest_point_wrapper(surface_points, border_centers):
+    #return nearest_point_calculations((surface_points[10], border_centers[10]))
+    return tf.map_fn(nearest_point_calculations, (surface_points, border_centers), fn_output_signature=tf.RaggedTensorSpec(shape=(None, 2)))
+
+def calculate_nearest_point_init(surface_points, border_centers, func):
+    surface_points_tensor = tf.ragged.constant(surface_points, dtype=tf.float32)
+    border_centers_tensor = tf.ragged.constant(border_centers, dtype=tf.float32)
+    return func(surface_points_tensor, border_centers_tensor)
+
+def calculate_nearest_point_function():
+    func = tf.function(nearest_point_wrapper)
+    return lambda x, y: calculate_nearest_point_init(x, y, func)
 
 def extract_texture_function():
     resnet = tf.keras.applications.resnet50.ResNet50(include_top=False, weights='imagenet', input_shape=(480, 640, 3))

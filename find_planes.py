@@ -150,7 +150,6 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         features = extract_features(log_depth, rgb_image, angles, grid)
 
         surfaces, depth_edges = surface_model(smoothed_depth)
-
         number_of_surfaces = int(np.max(surfaces) + 1)
         unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
 
