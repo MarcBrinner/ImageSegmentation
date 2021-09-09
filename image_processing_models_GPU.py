@@ -311,12 +311,9 @@ def conv_crf_depth(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, th
     return model
 
 def custom_loss(y_actual, y_predicted):
-    only_wrong_ones = tf.multiply(y_actual, y_predicted)
-    error = tf.reduce_sum(only_wrong_ones, axis=-1)
-    #print(y_predicted)
-    #print(y_predicted)
-    print(tf.reduce_min(error))
-    return 100*error
+    bce = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+    error = tf.reduce_sum(bce(y_actual[0], y_predicted)*y_actual[1], axis=-1)
+    return error
 
 def angle_calculator(vec):
     mult_1 = tf.constant(np.asarray([0.0, 1.0, 1.0]), dtype=tf.float32)

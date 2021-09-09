@@ -18,7 +18,7 @@ from standard_values import *
 train_indices = [109, 108, 107, 105, 104, 103, 102, 101, 100]
 test_indices = [110, 106]
 
-def find_annotation_correspondence(surfaces, annotation):
+def find_annotation_correspondence_general(surfaces, annotation):
     mapping = {i: set() for i in range(int(np.max(annotation)+1))}
     height, width = np.shape(surfaces)
     for y in range(height):
@@ -28,6 +28,14 @@ def find_annotation_correspondence(surfaces, annotation):
                 continue
             mapping[annotation[y][x]].add(index)
     return mapping
+
+def find_annotation_correspondence_patch_specific(surfaces, annotation, number_of_surfaces):
+    correspondence = {i: set() for i in range(number_of_surfaces)}
+    for y in range(height):
+        for x in range(width):
+            if surface := surfaces[y][x] != 0:
+                correspondence[surface].add(annotation[y][x])
+    return correspondence
 
 def get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y):
     features_1, features_2, features_3 = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
@@ -48,21 +56,43 @@ def get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x,
     return [np.asarray(x) for x in [unary, Q_in, f_1, f_2, f_3]]
 
 def get_training_targets(surfaces, annotation, number_of_surfaces, depth_image, div_x, div_y, size_x, size_y):
-    correspondence = find_annotation_correspondence(surfaces, annotation)
+    correspondence_general = find_annotation_correspondence_general(surfaces, annotation)
+    correspondence_patch_specific = find_annotation_correspondence_patch_specific(surfaces, annotation, number_of_surfaces)
     height, width = np.shape(depth_image)
-    Y = np.zeros((height, width, number_of_surfaces))
+    Y = np.zeros((height, width, 2, number_of_surfaces))
     for y in range(height):
         for x in range(width):
             if depth_image[y][x] < 0.001:
                 continue
+            a = annotation[y][x]
+            l = surfaces[y][x]
+
             label = np.ones(number_of_surfaces)
-            for l in correspondence[annotation[y][x]]:
-                label[l] = 0
-            Y[y][x] = label
+            weight = np.zeros(number_of_surfaces)
+            if l != 0:
+                label = np.zeros(number_of_surfaces)
+                weight = np.ones(number_of_surfaces)
+                if len(correspondence_patch_specific[l]) < 2:
+                    label[l] = 1
+                else:
+                    possible_labels = set()
+                    for ann in correspondence_patch_specific[l]:
+                        for p in correspondence_general[ann]:
+                            possible_labels.add(p)
+                    for p in possible_labels:
+                        weight[p] = 0
+            elif a != 0:
+                label = np.zeros(number_of_surfaces)
+                for l in correspondence_general[a]:
+                    weight[l] = 0
+
+            Y[y][x][0] = label
+            Y[y][x][1] = weight
+
     Y_batch = []
     for x in range(div_x):
         for y in range(div_y):
-            Y_batch.append(Y[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x, :])
+            Y_batch.append(Y[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x])
     return np.asarray(Y_batch)
 
 def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width, number_of_surfaces):
@@ -127,7 +157,7 @@ def train_model_on_images(image_indices, load_index=2, save_index=3, epochs=1, k
             save_parameters(conv_crf_model, save_index)
 
 def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
-    div_x, div_y = 4, 4
+    div_x, div_y = 30, 30
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -150,6 +180,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         features = extract_features(log_depth, rgb_image, angles, grid)
 
         surfaces, depth_edges = surface_model(smoothed_depth)
+
         number_of_surfaces = int(np.max(surfaces) + 1)
         unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(surfaces, number_of_surfaces)
 
@@ -169,7 +200,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        #plot_surfaces(Q)
+        #plot_surfaces(Q, True)
         results.append(Q)
         os.makedirs(f"out/{index}", exist_ok=True)
         np.save(f"out/{index}/Q.npy", Q)
@@ -210,7 +241,7 @@ def extract_features(depth_image, lab_image, angles, grid):
 
     return (features_1_new, features_2_new, features_3_new)
 
-def plot_surfaces(Q, max=True):
+def plot_surfaces(Q, max=False):
     if max:
         image = np.argmax(Q, axis=-1)
         image = np.reshape(image, (480, 640))
@@ -220,8 +251,5 @@ def plot_surfaces(Q, max=True):
     plt.show()
 
 if __name__ == '__main__':
-    #train_model_on_images(train_indices)
-    #test_model_on_image([0], load_index=2)
-    #quit()
-    test_model_on_image(list(range(0, 111)), load_index=-1)
+    test_model_on_image(list(range(35, 111)), load_index=-1)
     quit()

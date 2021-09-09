@@ -727,7 +727,7 @@ def texture_similarity_calc(texture_vecs):
 def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image, number_of_surfaces_in, patches, models, vectors, points_in_space, depth_edges):
     t = time.time()
     global number_of_surfaces
-    #plot_surfaces(patches, False)
+    plot_surfaces(patches)
 
     number_of_surfaces = number_of_surfaces_in
     color_similarity_model, angle_similarity_model, texture_similarity_model, texture_model, nearest_points_func = models
@@ -736,7 +736,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
     average_normals, centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend \
         = extract_information(rgb_image, texture_model, surfaces, patches, normal_angles, lab_image, depth_image, points_in_space, depth_edges)
 
-    #plot_surfaces(patches, False)
+    plot_surfaces(surfaces)
 
     similarities_color = color_similarity_model(histogram_color)
     similarities_angle = angle_similarity_model(histogram_angles)
@@ -749,11 +749,11 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
     join_matrix_convexity, concave, new_surfaces = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
                                                                  border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image)
-    #plot_surfaces(new_surfaces, False)
+    #plot_surfaces(new_surfaces)
     _, relabeling = join_surfaces_according_to_join_matrix(join_matrix_convexity, surfaces.copy(), number_of_surfaces)
     join_matrix_occlusion, new_surfaces = join_disconnected_patches(nearest_points_func, sim_occlusion, sim_curved, coplanarity, average_positions,
                                                                 surface_patch_points, surfaces, points_in_space, relabeling, norm_image, depth_extend)
-    #plot_surfaces(new_surfaces, False)
+    #plot_surfaces(new_surfaces)
 
     join_matrix_final = remove_convex_connections_after_occlusion_reasoning(join_matrix_occlusion, join_matrix_convexity,
                                                                       similarities_color + similarities_texture, coplanarity, concave,
@@ -765,7 +765,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
 def main():
     models = get_GPU_models()
-    for index in list(range(0, 111)):
+    for index in list(range(38, 111)):
         print(index)
         depth, rgb, annotation = load_image(index)
         lab = rgb_to_Lab(rgb)
@@ -782,12 +782,4 @@ def main():
     quit()
 
 if __name__ == '__main__':
-    #train_k_means_for_texture_vectors()
-    #test_clusters()
-    #quit()
-    #f = extract_features_function()
-    #depth, rgb, annotation = load_image(110)
-    #out = f(rgb)
-    #print(np.shape(out))
-    #quit()
     main()
