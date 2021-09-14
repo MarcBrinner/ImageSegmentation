@@ -190,12 +190,11 @@ def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_poin
             below += 1
     return above, below
 
-def determine_convexity_with_closest_points(angles, closest_points, neighbors, surfaces, points_in_space, coplanarity, norm_image):
+def determine_convexity_with_closest_points(angles, closest_points, neighbors, surfaces, points_in_space, coplanarity, norm_image, sim_convexity):
     convex = np.zeros((number_of_surfaces, number_of_surfaces))
     concave = np.zeros((number_of_surfaces, number_of_surfaces))
     new_surfaces = surfaces.copy()
     for i in range(number_of_surfaces):
-        #i = 18
         for j in range(len(neighbors[i])):
             surface_2 = neighbors[i][j]
             index_1 = neighbors[surface_2].index(i)
@@ -244,7 +243,7 @@ def determine_convexity_with_closest_points(angles, closest_points, neighbors, s
             above, below = determine_convexity_with_above_and_below_line(np.asarray(normal_1, dtype="float32"), np.asarray(normal_2, dtype="float32"),
                                                                          space_point_1, space_point_2, c_1, c_2, points_in_space)
 
-            if (v1 - v2 > 0.05 and above > below*1.6):# or (v1 - v2 > 0.2 and above >= below):
+            if (sim_convexity[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*1.6) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)):# or (v1 - v2 > 0.2 and above >= below):
                 convex[i][surface_2] = 1
                 convex[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -305,7 +304,11 @@ def determine_similar_patches(texture_similarities, color_similarities, normal_s
         similar_patches_4[i][i] = 0
         similar_patches_5[i][i] = 0
 
-    return similar_patches_1, similar_patches_2, similar_patches_3, similar_patches_4, similar_patches_5
+    values = texture_similarities + color_similarities
+    similar_patches_6 = np.zeros_like(texture_similarities)
+    similar_patches_6[values < 1.2] = 1
+
+    return similar_patches_1, similar_patches_2, similar_patches_3, similar_patches_4, similar_patches_5, similar_patches_6
 
 #@njit()
 def join_similar_neighbors(candidates_if_not_concave, candidates_if_concave, neighbors, concave):
@@ -514,7 +517,7 @@ def determine_occlusion(candidates, candidates_occlusion, closest_points, surfac
                 elif s == 0:
                     zero_counter += 1
                 index += 1
-            if zero_counter >= 30:
+            if zero_counter > 45:
                 other_index = True
             if (not other_index and (candidates_curved[i][j] == 0) and coplanarity[i][j] == 0):
                 continue
@@ -691,9 +694,9 @@ def extract_information(rgb_image, texture_model, surfaces, patches, normal_angl
     return average_positions, histogram_color, histogram_angles, histogram_texture, centroids, average_normals,\
            centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend
 
-def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image):
+def determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image, sim_convexity):
     nearest_points = nearest_points_func(surface_patch_points, prepare_border_centers(neighbors, border_centers))
-    convex, concave, new_surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, surfaces, points_in_space, coplanarity, norm_image)
+    convex, concave, new_surfaces = determine_convexity_with_closest_points(normal_angles, nearest_points, neighbors, surfaces, points_in_space, coplanarity, norm_image, sim_convexity)
     return convex, concave, new_surfaces
 
 def join_disconnected_patches(nearest_points_func, similar_patches_occlusion, similar_patches_curved, coplanarity,
@@ -755,13 +758,13 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
     similarities_angle = angle_similarity_model(histogram_angles)
     similarities_texture = texture_similarity_calc(histogram_texture)
 
-    sim_neighbors, sim_neighbors_concave, sim_occlusion, sim_occlusion_coplanar, sim_curved\
+    sim_neighbors, sim_neighbors_concave, sim_occlusion, sim_occlusion_coplanar, sim_curved, sim_convexity\
         = determine_similar_patches(similarities_texture, similarities_color, similarities_angle, [(0.6, 0.6), (0, 0), (0.6, 0.5, 7, 2), (0.8, 1.0, 7), (0.8, 0.7, 1.15)], neighbors, planes)
 
     coplanarity = determine_coplanarity(sim_occlusion_coplanar, centroids, angles_to_normals(average_normals).astype("float32"), planes, number_of_surfaces)
 
     join_matrix_convexity, concave, new_surfaces = determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors,
-                                                                 border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image)
+                                                                 border_centers, normal_angles, surfaces, points_in_space, coplanarity, norm_image, sim_convexity)
     plot_surfaces(new_surfaces)
     _, relabeling = join_surfaces_according_to_join_matrix(join_matrix_convexity, surfaces.copy(), number_of_surfaces)
     join_matrix_occlusion, new_surfaces = join_disconnected_patches(nearest_points_func, sim_occlusion, sim_curved, coplanarity, average_positions,
@@ -778,7 +781,7 @@ def assemble_surfaces(surfaces, normal_angles, rgb_image, lab_image, depth_image
 
 def main():
     models = get_GPU_models()
-    for index in list(range(104, 111)):
+    for index in list(range(108, 111)):
         print(index)
         depth, rgb, annotation = load_image(index)
         lab = rgb_to_Lab(rgb)

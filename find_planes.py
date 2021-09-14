@@ -251,5 +251,5 @@ def plot_surfaces(Q, max=False):
     plt.show()
 
 if __name__ == '__main__':
-    test_model_on_image(list(range(35, 111)), load_index=-1)
+    test_model_on_image(list(range(103, 111)), load_index=-1)
     quit()
