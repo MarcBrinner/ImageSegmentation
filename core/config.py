@@ -23,7 +23,7 @@ cfg                           = __C
 __C.YOLO                      = edict()
 
 # Set the class name
-__C.YOLO.CLASSES              = "./data/classes/coco.names"
+__C.YOLO.CLASSES              = "./data/classes/tabletop.names"
 __C.YOLO.ANCHORS              = "./data/anchors/basline_anchors.txt"
 __C.YOLO.STRIDES              = [8, 16, 32]
 __C.YOLO.ANCHOR_PER_SCALE     = 3
@@ -32,7 +32,7 @@ __C.YOLO.IOU_LOSS_THRESH      = 0.5
 # Train options
 __C.TRAIN                     = edict()
 
-__C.TRAIN.ANNOT_PATH          = "./data/dataset/yymnist_train.txt"
+__C.TRAIN.ANNOT_PATH          = "./data/YOLO_training_annotation.txt"
 __C.TRAIN.BATCH_SIZE          = 4
 # __C.TRAIN.INPUT_SIZE            = [320, 352, 384, 416, 448, 480, 512, 544, 576, 608]
 __C.TRAIN.INPUT_SIZE          = [416]

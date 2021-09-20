@@ -7,10 +7,10 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation
 
 def load_image_as_point_cloud(index):
-    files = os.listdir("Data/pcd")
+    files = os.listdir("data/pcd")
     files = load_images.sorted_alphanumeric(files)
     file = files[index]
-    pcd = o3d.io.read_point_cloud(f"Data/pcd/{file}")
+    pcd = o3d.io.read_point_cloud(f"data/pcd/{file}")
     rot = Rotation.from_quat([1, 0, 0, 0]).as_matrix()
     points = np.asarray(pcd.points)
     pcd.rotate(rot)

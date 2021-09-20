@@ -17,7 +17,11 @@ import numpy as np
 import core.utils as utils
 import tensorflow as tf
 from core.yolov3 import YOLOv3, decode
+import matplotlib.pyplot as PLT
 
+def plot_array_PLT(array):
+    PLT.imshow(array)
+    PLT.show()
 
 video_path      = "./docs/road.mp4"
 # video_path      = 0
@@ -61,10 +65,11 @@ while True:
     info = "time: %.2f ms" %(1000*exec_time)
     cv2.putText(result, text=info, org=(50, 70), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                 fontScale=1, color=(255, 0, 0), thickness=2)
-    cv2.namedWindow("result", cv2.WINDOW_AUTOSIZE)
-    result = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    cv2.imshow("result", result)
-    if cv2.waitKey(1) & 0xFF == ord('q'): break
+    #cv2.namedWindow("result", cv2.WINDOW_AUTOSIZE)
+    #result = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    plot_array_PLT(np.asarray(result))
+
+    #if cv2.waitKey(1) & 0xFF == ord('q'): break
 
 
 

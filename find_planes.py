@@ -200,7 +200,7 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
         Q[depth_image == 0] = 0
 
         print(time.time()-t)
-        #plot_surfaces(Q, True)
+        plot_surfaces(Q, True)
         results.append(Q)
         os.makedirs(f"out/{index}", exist_ok=True)
         np.save(f"out/{index}/Q.npy", Q)
