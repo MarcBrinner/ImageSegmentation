@@ -20,7 +20,6 @@ import core.utils as utils
 from core.config import cfg
 from core.yolov3 import YOLOv3, decode
 
-
 INPUT_SIZE   = 416
 NUM_CLASS    = len(utils.read_class_names(cfg.YOLO.CLASSES))
 CLASSES      = utils.read_class_names(cfg.YOLO.CLASSES)

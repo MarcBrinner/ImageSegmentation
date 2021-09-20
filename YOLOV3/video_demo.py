@@ -33,7 +33,7 @@ for i, fm in enumerate(feature_maps):
     bbox_tensors.append(bbox_tensor)
 
 model = tf.keras.Model(input_layer, bbox_tensors)
-utils.load_weights(model, "./yolov3.weights")
+utils.load_weights(model, "../parameters/yolov3.weights")
 model.summary()
 vid = cv2.VideoCapture(video_path)
 while True:

@@ -9,12 +9,12 @@ def sorted_alphanumeric(data):
     return sorted(data, key=alphanum_key)
 
 def load_image(index):
-    files = os.listdir("Data/disparity")
+    files = os.listdir("data/disparity")
     files = sorted_alphanumeric(files)
     file = files[index]
-    depth_image = Image.open(f"Data/disparity/{file}")
-    RGB_image = Image.open(f"Data/RGB/{file}")
-    annotation = Image.open(f"Data/annotation/{file}")
+    depth_image = Image.open(f"data/disparity/{file}")
+    RGB_image = Image.open(f"data/RGB/{file}")
+    annotation = Image.open(f"data/annotation/{file}")
     return np.asarray(depth_image), np.asarray(RGB_image), np.asarray(annotation)
 
 if __name__ == '__main__':
