@@ -42,7 +42,6 @@ class Dataset(object):
         self.num_batchs = int(np.ceil(self.num_samples / self.batch_size))
         self.batch_count = 0
 
-
     def load_annotations(self, dataset_type):
         with open(self.annot_path, 'r') as f:
             txt = f.readlines()

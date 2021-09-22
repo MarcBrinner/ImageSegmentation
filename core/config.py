@@ -39,15 +39,15 @@ __C.TRAIN.INPUT_SIZE          = [416]
 __C.TRAIN.DATA_AUG            = True
 __C.TRAIN.LR_INIT             = 1e-3
 __C.TRAIN.LR_END              = 1e-6
-__C.TRAIN.WARMUP_EPOCHS       = 2
-__C.TRAIN.EPOCHS              = 30
+__C.TRAIN.WARMUP_EPOCHS       = 1
+__C.TRAIN.EPOCHS              = 5
 
 
 
 # TEST options
 __C.TEST                      = edict()
 
-__C.TEST.ANNOT_PATH           = "./data/dataset/yymnist_test.txt"
+__C.TEST.ANNOT_PATH           = "./data/YOLO_training_annotation.txt"
 __C.TEST.BATCH_SIZE           = 2
 __C.TEST.INPUT_SIZE           = 544
 __C.TEST.DATA_AUG             = False
