@@ -1,7 +1,14 @@
 import numpy as np
 import assemble_objects
 import detect_objects
+import tensorflow as tf
+from tensorflow.keras import layers, optimizers, Model
 from standard_values import *
+
+def mean_field_iteration(unary_potentials, pairwise_potentials, Q):
+    tf.multiply(pairwise_potentials, Q)
+
+
 
 def get_neighborhood_matrix(neighbors_list, number_of_surfaces):
     neighbor_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
@@ -55,4 +62,4 @@ def get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, pat
     bboxes = object_detector(rgb_image)
     bbox_overlap_matrix = calc_box_and_surface_overlap(bboxes, surfaces, number_of_surfaces)
 
-    return bbox_overlap_matrix, similarities_texture, similarities_color, convexity_matrix, convexity_matrix, neighborhood_matrix
+    return bbox_overlap_matrix, similarities_texture, similarities_color, convexity_matrix, coplanarity_matrix, neighborhood_matrix
