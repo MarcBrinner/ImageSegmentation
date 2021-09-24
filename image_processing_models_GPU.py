@@ -65,6 +65,7 @@ class Print_Tensor(layers.Layer):
         super(Print_Tensor, self).build(input_shape)
 
     def call(self, input_data):
+        print(input_data)
         return input_data
 
     def compute_output_shape(self, input_shape):

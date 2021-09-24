@@ -8,26 +8,39 @@ from image_processing_models_GPU import Variable2, Print_Tensor
 from tensorflow.keras import layers, optimizers, Model, losses
 from standard_values import *
 
-initial_guess_parameters = [1, 2, 2, 1, 3, 3, 0, -1, -1, 0, 0, 0, -0.5, 1, 0.1]
+initial_guess_parameters = [1, 2, 2, 1, 3, 3, 0, -1, -1, 0, 0, 0, -0.5, 1, 0.001]
+
+def print_tensor(input):
+    p = Print_Tensor()(input)
+    return p
 
 def get_Y_value(annotation, surfaces, number_of_surfaces):
     num_annotations = np.max(annotation)
     annotation_counter = np.zeros((number_of_surfaces, num_annotations+1))
     annotation_counter[:, 0] = np.ones(number_of_surfaces)
+    counts = np.zeros(number_of_surfaces)
     for y in range(height):
         for x in range(width):
-            if (s := surfaces[y][x]) != 0 and (a := annotation[y][x]) != 0:
-                annotation_counter[s][a] += 1
+            if (s := surfaces[y][x]) != 0:
+                counts[s] += 1
+                if (a := annotation[y][x]) != 0:
+                    annotation_counter[s][a] += 1
 
+    counts[counts == 0] = 1
+    annotation_counter[np.divide(annotation_counter, np.expand_dims(counts, axis=-1)) < 0.6] = 0
     annotation_correspondence = np.argmax(annotation_counter, axis=-1)
+    annotation_correspondence[np.max(annotation_counter, axis=-1) == 0] = 0
 
-    Y = np.zeros((number_of_surfaces-1, number_of_surfaces-1))
+    Y = np.zeros((number_of_surfaces, number_of_surfaces))
+    Y_2 = np.zeros((number_of_surfaces, number_of_surfaces))
     for s_1 in range(1, number_of_surfaces):
-        for s_2 in range(1, number_of_surfaces):
-            if (a := annotation_correspondence[s_1]) == annotation_correspondence[s_2] and a != 0:
-                Y[s_1-1][s_2-1] = 1
+        for s_2 in range(s_1+1, number_of_surfaces):
+            if (a := annotation_correspondence[s_1]) == (b := annotation_correspondence[s_2]) and a != 0:
+                Y[s_1][s_2] = 1
+            if a > 0 or b > 0:
+                Y_2[s_1][s_2] = 1
 
-    return Y
+    return np.asarray([np.stack([Y, Y_2], axis=0)[:, 1:, 1:]])
 
 def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight):
     Q_mult = tf.tile(tf.expand_dims(Q, axis=1), [1, num_labels, 1, 1])
@@ -37,7 +50,7 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
     new_Q = tf.math.divide_no_nan(new_Q, tf.reduce_sum(new_Q, axis=-1, keepdims=True))
     return new_Q
 
-def mean_field_CRF(w_1, w_2, w_3, w_4, w_5, w_6, w_7, w_8, w_9, w_10, w_11, w_12, w_13, w_14, weight, num_iterations=5):
+def mean_field_CRF(w_1, w_2, w_3, w_4, w_5, w_6, w_7, w_8, w_9, w_10, w_11, w_12, w_13, w_14, weight, num_iterations=3):
     Q_in = layers.Input(shape=(None, None))
     #unary_in = layers.Input(shape=(None, None))
     num_labels = tf.shape(Q_in)[1]
@@ -74,14 +87,22 @@ def mean_field_CRF(w_1, w_2, w_3, w_4, w_5, w_6, w_7, w_8, w_9, w_10, w_11, w_12
     return model
 
 def custom_loss(y_actual, y_predicted):
-    num_labels = tf.shape(y_predicted)[1]
+    join_matrix = tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1)
+    mask = tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1)
+
+    num_labels = tf.shape(y_predicted)[2]
+
     prediction_expanded_1 = tf.tile(tf.expand_dims(y_predicted, axis=1), [1, num_labels, 1, 1])
     prediction_expanded_2 = tf.tile(tf.expand_dims(y_predicted, axis=2), [1, 1, num_labels, 1])
     mult_out = tf.multiply(prediction_expanded_1, prediction_expanded_2)
     sum_out = tf.reduce_sum(mult_out, axis=-1)
-    positive_error = tf.reduce_sum(tf.reduce_sum(tf.multiply(y_actual, sum_out), axis=-1),axis=-1)
-    negative_error = tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.ones_like(y_actual) - y_actual, sum_out), axis=-1),axis=-1)
-    return -positive_error + 0.05 * negative_error
+    mask_out = tf.multiply(sum_out, mask)
+
+    positive_error = tf.reduce_sum(tf.reduce_sum(tf.multiply(join_matrix, mask_out), axis=-1),axis=-1)
+    negative_error = tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.ones_like(join_matrix) - join_matrix, mask_out), axis=-1),axis=-1)
+    error = -positive_error + 0.1 * negative_error
+    print(error)
+    return error
 
 def get_initial_probabilities(num_labels):
     potentials = np.eye(num_labels) * 10
@@ -151,8 +172,7 @@ def plot_prediction(prediction, surfaces):
             surfaces[surfaces == i] = max_vals[i]+1
     assemble_objects.plot_surfaces(surfaces)
 
-def assemble_objects_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image, annotation):
-
+def assemble_objects_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image, annotation, train=False):
     bbox_overlap_matrix, similarities_texture, similarities_color, convexity_matrix, coplanarity_matrix, neighborhood_matrix =\
         get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image)
 
@@ -163,18 +183,24 @@ def assemble_objects_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, m
 
     input = [np.asarray([e]) for e in [Q_in, convexity_matrix, similarities_color, similarities_texture,
                                                               coplanarity_matrix, bbox_overlap_matrix, neighborhood_matrix]]
-    prediction = CRF_model.predict(input)
-    #plot_prediction(prediction, surfaces)
-    join_matrix = get_Y_value(annotation, surfaces, num_labels+1)
-    s, l = assemble_objects.join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_labels+1)
-    assemble_objects.plot_surfaces(s)
+
+    if not train:
+        prediction = CRF_model.predict(input)
+        plot_prediction(prediction, surfaces)
+    else:
+        Y = get_Y_value(annotation, surfaces, num_labels+1)
+        #s, l = assemble_objects.join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_labels+1)
+        #assemble_objects.plot_surfaces(s)
+        CRF_model.fit(input, Y)
+        prediction = CRF_model.predict(input)
+        plot_prediction(prediction, surfaces)
 
 def get_GPU_models():
     return assemble_objects.chi_squared_distances_model((10, 10), (4, 4)), \
            assemble_objects.chi_squared_distances_model_1D(), \
            assemble_objects.extract_texture_function(), \
            assemble_objects.calculate_nearest_points,\
-           detect_objects.get_object_detector(),\
+           detect_objects.get_object_detector(weights="parameters/yolov3.weights"),\
            mean_field_CRF(*initial_guess_parameters)
 
 def main():
@@ -190,7 +216,7 @@ def main():
         points_in_space = np.load(f"out/{index}/points.npy")
         depth_edges = np.load(f"out/{index}/edges.npy")
         Q = np.argmax(Q, axis=-1)
-        assemble_objects_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_in_space, depth_image, annotation)
+        assemble_objects_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_in_space, depth_image, annotation, True)
     quit()
 
 if __name__ == '__main__':

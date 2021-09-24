@@ -23,7 +23,8 @@ def get_object_detector_model(weights="./parameters/YOLO_trained_weights/weights
 
     model = tf.keras.Model(input_layer, bbox_tensors)
     if weights:
-        model.load_weights(weights)
+        #model.load_weights(weights)
+        utils.load_weights(model, weights)
     model.compile(loss=tf.keras.losses.MAE, optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5), metrics=[], run_eagerly=True)
 
     #model.summary()
@@ -48,13 +49,16 @@ def show_bounding_boxes(input_image, bboxes):
     image = utils.draw_bbox(input_image.copy(), bboxes)
     plot_image.plot_array_PLT(image)
 
-def get_object_detector():
-    model = get_object_detector_model()
+def get_object_detector(weights=None):
+    if weights:
+        model = get_object_detector_model(weights)
+    else:
+        model = get_object_detector_model()
     return lambda x: detect_objects(model, x)
 
 def main():
     detector = get_object_detector_model()
-    for i in range(110):
+    for i in range(111):
         _, rgb, _  = load_images.load_image(i)
         bboxes = detect_objects(detector, rgb)
         show_bounding_boxes(rgb, bboxes)
