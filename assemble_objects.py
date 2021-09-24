@@ -21,6 +21,10 @@ number_of_surfaces = 0
 
 normed = lambda x: x/np.linalg.norm(x)
 
+def set_number_of_surfaces(n):
+    global number_of_surfaces
+    number_of_surfaces = n
+
 @njit()
 def remove_disconnected_components(surfaces, centroid_indices):
     connected_indices = np.zeros_like(surfaces)

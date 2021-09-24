@@ -12,7 +12,7 @@ from core import utils, dataset, config
 from PIL import Image
 input_size = 416
 
-def get_object_detector(weights="./parameters/YOLO_trained_weights/weights.ckpt"):
+def get_object_detector_model(weights="./parameters/YOLO_trained_weights/weights.ckpt"):
     input_layer = tf.keras.layers.Input([input_size, input_size, 3])
     feature_maps = YOLOv3(input_layer)
 
@@ -26,7 +26,7 @@ def get_object_detector(weights="./parameters/YOLO_trained_weights/weights.ckpt"
         model.load_weights(weights)
     model.compile(loss=tf.keras.losses.MAE, optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5), metrics=[], run_eagerly=True)
 
-    model.summary()
+    #model.summary()
     return model
 
 
@@ -37,7 +37,6 @@ def detect_objects(model, input_image):
     image_data = image_data[np.newaxis, ...].astype(np.float32)
 
     pred_bbox = model.predict_on_batch(image_data)
-    print([np.any(np.isnan(pred_bbox[i])) for i in range(3)])
 
     pred_bbox = [tf.reshape(x, (-1, tf.shape(x)[-1])) for x in pred_bbox]
     pred_bbox = tf.concat(pred_bbox, axis=0)
@@ -49,8 +48,12 @@ def show_bounding_boxes(input_image, bboxes):
     image = utils.draw_bbox(input_image.copy(), bboxes)
     plot_image.plot_array_PLT(image)
 
+def get_object_detector():
+    model = get_object_detector_model()
+    return lambda x: detect_objects(model, x)
+
 def main():
-    detector = get_object_detector()
+    detector = get_object_detector_model()
     for i in range(110):
         _, rgb, _  = load_images.load_image(i)
         bboxes = detect_objects(detector, rgb)
