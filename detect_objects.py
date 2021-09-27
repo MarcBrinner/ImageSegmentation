@@ -23,9 +23,9 @@ def get_object_detector_model(weights="./parameters/YOLO_trained_weights/weights
 
     model = tf.keras.Model(input_layer, bbox_tensors)
     if weights:
-        #model.load_weights(weights)
-        utils.load_weights(model, weights)
-    model.compile(loss=tf.keras.losses.MAE, optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5), metrics=[], run_eagerly=True)
+        model.load_weights(weights)
+        #utils.load_weights(model, weights)
+    model.compile(loss=tf.keras.losses.MAE, optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4), metrics=[], run_eagerly=True)
 
     #model.summary()
     return model
