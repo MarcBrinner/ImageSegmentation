@@ -24,7 +24,7 @@ def print_parameters(model):
         except:
             print(f"{name}: Not available.")
 
-def get_Y_value(annotation, surfaces, number_of_surfaces):
+def get_Y_value(annotation, surfaces, number_of_surfaces, num_boxes):
     num_annotations = np.max(annotation)
     annotation_counter = np.zeros((number_of_surfaces, num_annotations+1))
     annotation_counter[:, 0] = np.ones(number_of_surfaces)
@@ -50,7 +50,7 @@ def get_Y_value(annotation, surfaces, number_of_surfaces):
             if a > 0 or b > 0:
                 Y_2[s_1][s_2] = 1
 
-    return np.asarray([np.stack([Y, Y_2], axis=0)[:, 1:, 1:]])
+    return np.pad(np.asarray([np.stack([Y, Y_2], axis=0)[:, 1:, 1:]]), ((0, 0), (0, num_boxes), (0, num_boxes)))
 
 def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight):
     Q_mult = tf.tile(tf.expand_dims(Q, axis=1), [1, num_labels, 1, 1])
@@ -99,25 +99,39 @@ def mean_field_CRF(w_1, w_2, w_3, w_4, w_5, w_6, w_7, w_8, w_9, weight, num_iter
 
 def custom_loss(y_actual, y_predicted):
     join_matrix = tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1)
-    mask = tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1)
+    mask_1 = tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1)
 
     num_labels = tf.shape(y_predicted)[2]
 
-    prediction_expanded_1 = tf.tile(tf.expand_dims(y_predicted, axis=1), [1, num_labels, 1, 1])
-    prediction_expanded_2 = tf.tile(tf.expand_dims(y_predicted, axis=2), [1, 1, num_labels, 1])
-    mult_out = tf.multiply(prediction_expanded_1, prediction_expanded_2)
-    sum_out = tf.reduce_sum(mult_out, axis=-1)
-    mask_out = tf.multiply(sum_out, mask)
+    P = tf.tile(tf.expand_dims(y_predicted, axis=1), [1, num_labels, 1, 1])
+    Q = tf.tile(tf.expand_dims(y_predicted, axis=2), [1, 1, num_labels, 1])
 
-    positive_error = tf.reduce_sum(tf.reduce_sum(tf.multiply(join_matrix, mask_out), axis=-1),axis=-1)
-    negative_error = tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.ones_like(join_matrix) - join_matrix, mask_out), axis=-1),axis=-1)
-    error = -positive_error + 0.3 * negative_error
-    return error*10
+    M = 0.5 * P + 0.5 * Q
+    KL_1 = tf.reduce_sum(tf.multiply(tf.math.log(tf.math.divide_no_nan(P, M)), P), axis=-1)
+    KL_2 = tf.reduce_sum(tf.multiply(tf.math.log(tf.math.divide_no_nan(Q, M)), Q), axis=-1)
+    KL_sum_masked = tf.multiply(KL_1 + KL_2, mask_1)
 
-def get_initial_probabilities(num_labels):
-    potentials = np.eye(num_labels) * 1
-    potentials = potentials + np.random.uniform(size=(num_labels, num_labels))
-    potentials = potentials / np.sum(potentials, axis=-1, keepdims=True)
+    positive_error = -tf.reduce_sum(tf.reduce_sum(tf.multiply(join_matrix, KL_sum_masked), axis=-1),axis=-1)
+    negative_error = -tf.reduce_sum(tf.reduce_sum(tf.multiply(tf.ones_like(join_matrix) - join_matrix, KL_sum_masked), axis=-1),axis=-1)
+
+    entropy = -tf.reduce_sum(tf.reduce_sum(tf.multiply(y_predicted, tf.math.log(y_predicted)), axis=-1), axis=-1)
+
+    error = positive_error - 0.3 * negative_error + entropy
+    return error
+
+def get_initial_probabilities(num_labels, bbox_overlap):
+    num_boxes = np.shape(bbox_overlap)[0]
+    potentials_surfaces = np.eye(num_labels, num_boxes) * 1
+    potentials_surfaces = potentials_surfaces + np.random.uniform(size=(num_labels, num_labels))
+    potentials_surfaces = potentials_surfaces / np.sum(potentials_surfaces, axis=-1, keepdims=True)
+
+    potentials_boxes = bbox_overlap.copy()
+    potentials_boxes = potentials_boxes + np.random.uniform(size=np.shape(potentials_boxes)) * 0.1
+    potentials_boxes = potentials_boxes / np.sum(potentials_boxes, axis=-1, keepdims=True)
+    potentials_boxes[np.isnan(potentials_boxes)] = 0
+    np.pad(potentials_boxes, ((0, 0), (0, num_boxes)))
+
+    potentials = np.concatenate([potentials_surfaces, potentials_boxes], axis=0)
     return potentials
 
 def get_neighborhood_matrix(neighbors_list, number_of_surfaces):
@@ -149,6 +163,12 @@ def calc_box_and_surface_overlap(bboxes, surfaces, number_of_surfaces):
     overlap_counter = overlap_counter / np.expand_dims(counts, axis=0)
     return overlap_counter
 
+def create_bbox_similarity_matrix(bbox_overlap_matrix):
+    num_boxes, num_labels = np.shape(bbox_overlap_matrix)
+    similarity_matrix = np.zeros((num_boxes + num_labels, num_boxes + num_labels))
+    similarity_matrix[num_labels:, :num_labels] = bbox_overlap_matrix
+    return similarity_matrix
+
 def get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image):
     number_of_surfaces = int(np.max(surfaces) + 1)
     assemble_objects.set_number_of_surfaces(number_of_surfaces)
@@ -172,8 +192,8 @@ def get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, pat
     neighborhood_matrix = get_neighborhood_matrix(neighbors, number_of_surfaces)
     bboxes = object_detector(rgb_image)
     bbox_overlap_matrix = calc_box_and_surface_overlap(bboxes, surfaces, number_of_surfaces)
-    detect_objects.show_bounding_boxes(rgb_image, bboxes)
-    return np.transpose(bbox_overlap_matrix)[1:], similarities_texture[1:, 1:], similarities_color[1:, 1:], convexity_matrix[1:, 1:], coplanarity_matrix[1:, 1:], neighborhood_matrix[1:, 1:]
+
+    return bbox_overlap_matrix[:, 1:], similarities_texture[1:, 1:], similarities_color[1:, 1:], convexity_matrix[1:, 1:], coplanarity_matrix[1:, 1:], neighborhood_matrix[1:, 1:]
 
 def plot_prediction(prediction, surfaces):
     max_vals = np.argmax(prediction[0], axis=-1)
@@ -181,19 +201,19 @@ def plot_prediction(prediction, surfaces):
         if max_vals[i] != i:
             surfaces[surfaces == i+1] = max_vals[i]+1
     assemble_objects.plot_surfaces(surfaces)
-    print()
 
 def assemble_objects_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image, annotation, train=False, plot=False):
     bbox_overlap_matrix, similarities_texture, similarities_color, convexity_matrix, coplanarity_matrix, neighborhood_matrix =\
         get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image)
-    plot_surfaces(surfaces)
+    bbox_similarities = create_bbox_similarity_matrix(bbox_overlap_matrix)
+
     CRF_model = models[-1]
 
     num_labels = int(np.max(surfaces))
-    Q_in = get_initial_probabilities(num_labels)
+    Q_in = get_initial_probabilities(num_labels, bbox_overlap_matrix)
 
     input = [np.asarray([e]) for e in [Q_in, convexity_matrix, similarities_color, similarities_texture,
-                                                              coplanarity_matrix, bbox_overlap_matrix, neighborhood_matrix]]
+                                                              coplanarity_matrix, bbox_similarities, neighborhood_matrix]]
 
     if not train:
         prediction = CRF_model.predict(input)
