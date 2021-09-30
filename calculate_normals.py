@@ -5,7 +5,7 @@ import tensorflow as tf
 import time
 from tensorflow.keras import layers, Model
 from image_filters import *
-from image_operations import calculate_curvature_scores, convert_depth_image
+from utils import calculate_curvature_scores, convert_depth_image
 from scipy.spatial.transform import Rotation
 from load_images import load_image
 from plot_image import plot_normals

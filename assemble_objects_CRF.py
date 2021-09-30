@@ -1,103 +1,18 @@
 import numpy as np
-import assemble_objects
+import assemble_objects_rules
 import detect_objects
 import tensorflow as tf
-import pickle
-from image_operations import rgb_to_Lab
+import process_surfaces as ps
+from utils import rgb_to_Lab
 from load_images import load_image
-from image_processing_models_GPU import Variable2, Print_Tensor
+from image_processing_models_GPU import Variable2, Print_Tensor, extract_texture_function, chi_squared_distances_model_1D,\
+                                        chi_squared_distances_model_2D
 from tensorflow.keras import layers, optimizers, Model, losses
 from standard_values import *
 from find_planes import plot_surfaces
-from sklearn.linear_model import LogisticRegression
 
 #initial_guess_parameters = [1.1154784, 2, 2, 1, 1.1, 3, -1, 2, 1.0323303, 0.24122038]
 initial_guess_parameters = [1, 2, 2, 1, 1.1, 3, -1, 2, 1, 0.02]
-
-def load_image_and_surface_information(index):
-    depth, rgb, annotation = load_image(index)
-    lab = rgb_to_Lab(rgb)
-    Q = np.load(f"out/{index}/Q.npy")
-    depth_image = np.load(f"out/{index}/depth.npy")
-    angles = np.load(f"out/{index}/angles.npy")
-    patches = np.load(f"out/{index}/patches.npy")
-    points_in_space = np.load(f"out/{index}/points.npy")
-    depth_edges = np.load(f"out/{index}/edges.npy")
-    Q = np.argmax(Q, axis=-1)
-    return Q, depth_edges, rgb, lab, patches, angles, points_in_space, depth_image, annotation
-
-def create_training_set():
-    models = get_GPU_models()
-    inputs = []
-    labels = []
-    for index in range(111):
-        print(index)
-        Q, depth_edges, rgb, lab, patches, angles, points_in_space, depth_image, annotation = load_image_and_surface_information(index)
-        info = get_similarity_data_for_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_in_space, depth_image)
-        number_of_surfaces = int(np.max(Q) + 1)
-        num_boxes = np.shape(info[0])[0]
-        Y = get_Y_value(annotation, Q, number_of_surfaces, num_boxes)[0]
-        join_matrix = Y[0]
-        not_join_matrix = Y[1]
-
-        for i in range(number_of_surfaces-1):
-            for j in range(number_of_surfaces-1):
-                if (a := join_matrix[i][j]) == 1:
-                    labels.append(1)
-                elif (b := not_join_matrix[i][j]) == 1:
-                    labels.append(0)
-                if a > 0 or b > 0:
-                    inputs.append(np.asarray([np.sum(info[0][:, i] * info[0][:, j]), *[info[k][i, j] for k in range(1, 12)]]))
-        if index == 100:
-            np.save("data/train_in.npy", np.asarray(inputs))
-            np.save("data/train_labels.npy", np.asarray(labels))
-            inputs = []
-            labels = []
-        elif index == 110:
-            np.save("data/test_in.npy", np.asarray(inputs))
-            np.save("data/test_labels.npy", np.asarray(labels))
-            inputs = []
-            labels = []
-
-    return np.asarray(inputs), np.asarray(labels)
-
-def train_unary_classifier():
-    inputs_train = np.load("data/train_in.npy")
-    labels_train = np.load("data/train_labels.npy")
-    inputs_test = np.load("data/test_in.npy")
-    labels_test = np.load("data/test_labels.npy")
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(inputs_train, labels_train)
-    print(clf.coef_)
-    print(clf.intercept_)
-    pickle.dump(clf, open("parameters/unary_potential_clf/clf.pkl", "wb"))
-    print(np.sum(np.abs(clf.predict(inputs_train)-labels_train))/len(labels_train))
-    print(np.sum(np.abs(clf.predict(inputs_test)-labels_test))/len(labels_test))
-
-def assemble_objects_with_unary_classifier():
-    clf = pickle.load(open("parameters/unary_potential_clf/clf.pkl", "rb"))
-    models = get_GPU_models()
-    for index in range(101, 111):
-        Q, depth_edges, rgb, lab, patches, angles, points_in_space, depth_image, annotation = load_image_and_surface_information(index)
-        info = get_similarity_data_for_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_in_space,
-                                           depth_image)
-        number_of_surfaces = int(np.max(Q) + 1)
-        input_indices = []
-        inputs = []
-
-        for i in range(number_of_surfaces - 1):
-            for j in range(number_of_surfaces - 1):
-                inputs.append(np.asarray([np.sum(info[0][:, i] * info[0][:, j]), *[info[k][i, j] for k in range(1, 8)]]))
-                input_indices.append((i, j))
-        predictions = clf.predict(inputs)
-        join_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
-        for i in range(len(predictions)):
-            if predictions[i] == 1:
-                indices = input_indices[i]
-                join_matrix[indices[0]+1, indices[1]+1] = 1
-                join_matrix[indices[1]+1, indices[0]+1] = 1
-        s, r = assemble_objects.join_surfaces_according_to_join_matrix(join_matrix, Q, number_of_surfaces)
-        plot_surfaces(s)
 
 def print_tensor(input):
     p = Print_Tensor()(input)
@@ -112,11 +27,12 @@ def print_parameters(model):
         except:
             print(f"{name}: Not available.")
 
-def get_Y_value(annotation, surfaces, number_of_surfaces, num_boxes):
+def get_Y_value(data):
+    annotation, surfaces, num_surfaces, num_boxes = data["annotation"], data["surfaces"], data["num_surfaces"], data["num_bboxes"]
     num_annotations = np.max(annotation)
-    annotation_counter = np.zeros((number_of_surfaces, num_annotations+1))
-    annotation_counter[:, 0] = np.ones(number_of_surfaces)
-    counts = np.zeros(number_of_surfaces)
+    annotation_counter = np.zeros((num_surfaces, num_annotations+1))
+    annotation_counter[:, 0] = np.ones(num_surfaces)
+    counts = np.zeros(num_surfaces)
     for y in range(height):
         for x in range(width):
             if (s := surfaces[y][x]) != 0:
@@ -129,17 +45,17 @@ def get_Y_value(annotation, surfaces, number_of_surfaces, num_boxes):
     annotation_correspondence = np.argmax(annotation_counter, axis=-1)
     annotation_correspondence[np.max(annotation_counter, axis=-1) == 0] = 0
 
-    Y_1 = np.zeros((number_of_surfaces, number_of_surfaces))
-    Y_2 = np.zeros((number_of_surfaces, number_of_surfaces))
-    for s_1 in range(1, number_of_surfaces):
-        for s_2 in range(s_1+1, number_of_surfaces):
+    Y_1 = np.zeros((num_surfaces, num_surfaces))
+    Y_2 = np.zeros((num_surfaces, num_surfaces))
+    for s_1 in range(1, num_surfaces):
+        for s_2 in range(s_1+1, num_surfaces):
             if (a := annotation_correspondence[s_1]) == (b := annotation_correspondence[s_2]) and a != 0:
                 Y_1[s_1][s_2] = 1
             elif a > 0 or b > 0:
                 Y_2[s_1][s_2] = 1
 
     Y = np.pad(np.stack([Y_1, Y_2, np.zeros_like(Y_1)], axis=0), ((0, 0), (0, num_boxes), (0, num_boxes)))
-    for i in range(number_of_surfaces, number_of_surfaces + num_boxes):
+    for i in range(num_surfaces, num_surfaces + num_boxes):
         Y[2][i][i] = 1.0
     return np.asarray([Y[:, 1:, 1:]])
 
@@ -226,208 +142,75 @@ def get_initial_probabilities(num_labels, bbox_overlap):
     potentials = np.concatenate([potentials_surfaces, potentials_boxes], axis=0)
     return potentials
 
-def get_neighborhood_matrix(neighbors_list, number_of_surfaces):
-    neighbor_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
-    for i in range(len(neighbors_list)):
-        for neighbor in neighbors_list[i]:
-            neighbor_matrix[i][neighbor] = 1
-
-    return neighbor_matrix
-
-def calc_box_and_surface_overlap(bboxes, surfaces, number_of_surfaces):
-    n_bboxes = np.shape(bboxes)[0]
-    overlap_counter = np.zeros((n_bboxes, number_of_surfaces))
-
-    for i in range(n_bboxes):
-        box = np.round(bboxes[i]).astype("int32")
-        for y in range(box[1], box[3]+1):
-            for x in range(box[0], box[2]+1):
-                overlap_counter[i][surfaces[y][x]] += 1
-
-    counts = np.zeros(number_of_surfaces)
-    for y in range(height):
-        for x in range(width):
-            counts[surfaces[y][x]] += 1
-
-    for i in range(number_of_surfaces):
-        if counts[i] == 0: counts[i] = 1
-
-    overlap_counter = overlap_counter / np.expand_dims(counts, axis=0)
-    return overlap_counter
-
-def create_bbox_similarity_matrix(bbox_overlap_matrix):
-    num_boxes, num_labels = np.shape(bbox_overlap_matrix)
-    similarity_matrix = np.zeros((num_boxes + num_labels, num_boxes + num_labels))
-    similarity_matrix[num_labels:, :num_labels] = bbox_overlap_matrix
-    return similarity_matrix
-
-def determine_occlusion_and_connection_infos(closest_points, surfaces, norm_image, number_of_surfaces):
-    occlusion_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
-    close_matrix = np.zeros((number_of_surfaces, number_of_surfaces))
-    closest_points_array = np.zeros((number_of_surfaces, number_of_surfaces, 2), dtype="int32")
-
-    index_1 = 0
-    for i in range(number_of_surfaces):
-        index_2 = 0
-        for j in range(number_of_surfaces):
-            closest_points_array[i][j] = closest_points[index_1][index_2]
-            index_2 += 1
-        index_1 += 1
-
-    for i in range(number_of_surfaces):
-        for j in range(i + 1, number_of_surfaces):
-            p_1 = closest_points_array[i][j]
-            p_2 = closest_points_array[j][i]
-
-            dif = p_2 - p_1
-            length = np.max(np.abs(dif))
-            direction = dif / length
-
-            positions = np.swapaxes(np.expand_dims(p_1, axis=-1) + np.ndarray.astype(np.round(np.expand_dims(direction, axis=-1) *
-                                                                          (lambda x: np.stack([x, x]))(np.arange(1, length))), dtype="int32"),axis1=0, axis2=1)
-            pos_1 = p_1.copy()
-            pos_2 = p_2.copy()
-            index_1 = 0
-            index_2 = len(positions)
-            index = 0
-            other_index = False
-            other_surface_counter = 0
-            zero_counter = 0
-            for p in positions:
-                s = surfaces[p[1]][p[0]]
-                if s == i:
-                    index_1 = index
-                    pos_1 = p.copy()
-                elif s == j:
-                    index_2 = index
-                    pos_2 = p.copy()
-                    break
-                elif s != 0:
-                    other_surface_counter += 1
-                elif s == 0:
-                    zero_counter += 1
-                index += 1
-            if zero_counter >= 45 or other_surface_counter >= 3:
-                other_index = True
-            if not other_index and abs(index_2 - index_1) < 8:
-                close_matrix[i, j] = 1
-                close_matrix[j, i] = 1
-                continue
-
-            d_1 = norm_image[pos_1[1]][pos_1[0]]
-            d_2 = norm_image[pos_2[1]][pos_2[0]]
-            d_dif = d_2 - d_1
-
-            occluded = True
-
-            if index_1 != index_2:
-                index_dif = 1 / (index_2 - index_1) * d_dif
-
-                for k in range(index_2 - index_1 - 1):
-                    p = positions[index_1 + k + 1]
-                    s = surfaces[p[1]][p[0]]
-                    if norm_image[p[1]][p[0]] > k * index_dif + d_1 + 1 and s != 0:
-                        occluded = False
-                        break
-
-            if occluded:
-                occlusion_matrix[i, j] = 1
-                occlusion_matrix[j, i] = 1
-    return occlusion_matrix, close_matrix, closest_points_array
-
-def get_position_and_occlusion_infos(nearest_points_func, positions, surface_patch_points, surfaces, norm_image, number_of_surfaces):
-    input = assemble_objects.determine_occlusion_line_points(np.ones((number_of_surfaces, number_of_surfaces)), positions, surface_patch_points)
-    nearest_points_for_occlusion = nearest_points_func(*input)
-    join_matrix, close_matrix, closest_points = determine_occlusion_and_connection_infos(nearest_points_for_occlusion, surfaces, norm_image, number_of_surfaces)
+def get_position_and_occlusion_infos(data):
+    avg_positions, patch_points, surfaces, norm_image, num_surfaces = data["avg_pos"], data["patch_points"], data["surfaces"], data["norm"], data["num_surfaces"]
+    input = ps.determine_occlusion_line_points(np.ones((num_surfaces, num_surfaces)), patch_points, avg_positions, num_surfaces)
+    nearest_points_for_occlusion = ps.calculate_nearest_points(*input)
+    join_matrix, close_matrix, closest_points = ps.determine_occlusion_candidates_and_connection_infos(nearest_points_for_occlusion, surfaces, norm_image, num_surfaces)
     return join_matrix, close_matrix, closest_points
 
-def calculate_depth_extend_distances(depth_extend, number_of_surfaces):
-    distances = np.zeros((number_of_surfaces, number_of_surfaces))
-    for i in range(number_of_surfaces):
-        for j in range(i+1, number_of_surfaces):
-            d = assemble_objects.depth_extend_distance(i, j, depth_extend)
-            distances[i, j] = d
-            distances[j, i] = d
-    return distances
+def calculate_pairwise_similarity_features_for_surfaces(data, models):
+    color_similarity_model, angle_similarity_model, texture_model, object_detector, _ = models
 
-def get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image):
-    number_of_surfaces = int(np.max(surfaces) + 1)
-    assemble_objects.set_number_of_surfaces(number_of_surfaces)
-    color_similarity_model, texture_similarity_model, angle_similarity_model, texture_model, nearest_points_func, object_detector, _ = models
+    ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
-    average_positions, histogram_color, histogram_angles, histogram_texture, centroids, \
-    average_normals, centroid_indices, surfaces, planes, surface_patch_points, neighbors, border_centers, norm_image, depth_extend \
-        = assemble_objects.extract_information(rgb_image, texture_model, surfaces, patches, normal_angles, lab_image, depth_image,
-                              points_in_space, depth_edges)
+    data["sim_color"] = color_similarity_model(data["hist_color"])
+    data["sim_texture"] = ps.calculate_texture_similarities(data["hist_texture"], data["num_surfaces"])
+    data["sim_angles"] = angle_similarity_model(data["hist_angles"])/20
 
-    similarities_color = color_similarity_model(histogram_color)
-    similarities_texture = assemble_objects.texture_similarity_calc(histogram_texture)
-    similarities_angle = angle_similarity_model(histogram_angles)/20
-
-    planes = assemble_objects.find_even_planes(np.swapaxes(histogram_angles, 2, 0))
-    coplanarity_matrix = assemble_objects.determine_coplanarity(np.ones((number_of_surfaces, number_of_surfaces)), centroids,
-                                                         assemble_objects.angles_to_normals(average_normals).astype("float32"), planes, number_of_surfaces)
-
-    convexity_matrix, concave, _ = assemble_objects.determine_convexly_connected_surfaces(nearest_points_func, surface_patch_points, neighbors, border_centers,
-                                                                normal_angles, surfaces, points_in_space, coplanarity_matrix, norm_image, np.ones((number_of_surfaces, number_of_surfaces)))
-
-    neighborhood_matrix = get_neighborhood_matrix(neighbors, number_of_surfaces)
-    bboxes = object_detector(rgb_image)
-    bbox_overlap_matrix = calc_box_and_surface_overlap(bboxes, surfaces, number_of_surfaces)
+    data["planes"] = ps.determine_even_planes(data)
+    data["coplanarity"] = ps.determine_coplanarity(np.ones((data["num_surfaces"], data["num_surfaces"])), data)
+    data["convex"], data["concave"], _ = assemble_objects_rules.determine_convexly_connected_surfaces(np.ones((data["num_surfaces"], data["num_surfaces"])), data)
+    data["neighborhood_mat"] = ps.neighborhood_list_to_matrix(data)
+    data["bboxes"] = object_detector(data["rgb"])
+    data["bbox_overlap"] = ps.calc_box_and_surface_overlap(data)
+    data["bbox_similarities"] = ps.create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"])
+    data["num_bboxes"] = np.shape(data["bbox_overlap"])[0]
     #detect_objects.show_bounding_boxes(rgb_image, bboxes)
     #plot_surfaces(surfaces)
-    #centroid_distances = np.sqrt(np.sum(np.square(np.tile(np.expand_dims(centroids, axis=0), [number_of_surfaces, 1, 1]) - np.tile(np.expand_dims(centroids, axis=1), [1, number_of_surfaces, 1])), axis=-1))/1000
-    occlusion_matrix, close_matrix, closest_points = get_position_and_occlusion_infos(nearest_points_func, average_positions, surface_patch_points, surfaces, norm_image, number_of_surfaces)
-    close_matrix[neighborhood_matrix == 1] = 0
-    distances = np.sqrt(np.sum(np.square(closest_points - np.swapaxes(closest_points, axis1=0, axis2=1)), axis=-1))/500
-    depth_extend_distances = calculate_depth_extend_distances(depth_extend, number_of_surfaces)/1000
-
-    return bbox_overlap_matrix[:, 1:], similarities_texture[1:, 1:], similarities_color[1:, 1:], convexity_matrix[1:, 1:], coplanarity_matrix[1:, 1:],\
-           neighborhood_matrix[1:, 1:], concave[1:, 1:], distances[1:, 1:], occlusion_matrix[1:, 1:], close_matrix[1:, 1:], depth_extend_distances[1:, 1:],\
-           similarities_angle[1:, 1:]
+    #centroid_distances = np.sqrt(np.sum(np.square(np.tile(np.expand_dims(centroids, axis=0), [num_surfaces, 1, 1]) - np.tile(np.expand_dims(centroids, axis=1), [1, num_surfaces, 1])), axis=-1))/1000
+    data["occlusion_mat"], data["close_mat"], data["closest_points"] = get_position_and_occlusion_infos(data)
+    data["close_mat"][data["neighborhood_mat"] == 1] = 0
+    data["distances"] = np.sqrt(np.sum(np.square(data["closest_points"] - np.swapaxes(data["closest_points"], axis1=0, axis2=1)), axis=-1))/500
+    data["depth_extend_distances"] = ps.create_depth_extend_distance_matrix(data)/1000
 
 def plot_prediction(prediction, surfaces):
     max_vals = np.argmax(prediction[0], axis=-1)
     for i in range(len(max_vals)):
         if max_vals[i] != i:
             surfaces[surfaces == i+1] = max_vals[i]+1
-    assemble_objects.plot_surfaces(surfaces)
+    assemble_objects_rules.plot_surfaces(surfaces)
 
-def assemble_objects_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image, annotation, train=False, plot=False):
-    bbox_overlap_matrix, similarities_texture, similarities_color, convexity_matrix, coplanarity_matrix, neighborhood_matrix, concave, centroid_distances =\
-        get_similarity_data_for_CRF(surfaces, depth_edges, rgb_image, lab_image, patches, models, normal_angles, points_in_space, depth_image)
-    bbox_similarities = create_bbox_similarity_matrix(bbox_overlap_matrix)
+def assemble_objects_CRF(data, models, train=False):
+    calculate_pairwise_similarity_features_for_surfaces(data, models)
+    num_labels = data["num_surfaces"] - 1
 
     CRF_model = models[-1]
 
-    num_labels = int(np.max(surfaces))
-    num_boxes = np.shape(bbox_overlap_matrix)[0]
-    Q_in = get_initial_probabilities(num_labels, bbox_overlap_matrix)
+    Q_in = get_initial_probabilities(num_labels, data["bbox_overlap"])
     unary_in = Q_in.copy()
     unary_in[num_labels:] = -1000
 
-    input = [np.asarray([e]) for e in [Q_in, convexity_matrix, similarities_color, similarities_texture,
-                                                              coplanarity_matrix, bbox_similarities, neighborhood_matrix]]
+    input = [np.asarray([e]) for e in [Q_in, data["convexity"], data["sim_color"], data["sim_texture"],
+                                       data["coplanarity"], data["sim_bboxes"], data["neighborhood_mat"]]]
 
     if not train:
         prediction = CRF_model.predict(input)
-        plot_prediction(prediction, surfaces)
+        plot_prediction(prediction, data["surfaces"])
     else:
-        Y = get_Y_value(annotation, surfaces, num_labels+1, num_boxes)
+        Y = get_Y_value(data)
         #s, l = assemble_objects.join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_labels+1)
         #assemble_objects.plot_surfaces(s)
         CRF_model.fit(input, Y, epochs=700)
         print_parameters(CRF_model)
         prediction = CRF_model.predict(input)
-        plot_prediction(prediction, surfaces)
+        plot_prediction(prediction, data["surfaces"])
 
 def get_GPU_models():
-    return assemble_objects.chi_squared_distances_model((10, 10), (4, 4)), \
-           assemble_objects.chi_squared_distances_model_1D(), \
-           assemble_objects.chi_squared_distances_model((4, 4), (1, 1)),\
-           assemble_objects.extract_texture_function(), \
-           assemble_objects.calculate_nearest_points,\
-           detect_objects.get_object_detector(),\
+    return chi_squared_distances_model_2D((10, 10), (4, 4)), \
+           chi_squared_distances_model_2D((4, 4), (1, 1)), \
+           extract_texture_function(), \
+           detect_objects.get_object_detector(), \
            mean_field_CRF(*initial_guess_parameters)
 
 def main():
@@ -443,20 +226,20 @@ def main():
         depth_image = np.load(f"out/{index}/depth.npy")
         angles = np.load(f"out/{index}/angles.npy")
         patches = np.load(f"out/{index}/patches.npy")
-        points_in_space = np.load(f"out/{index}/points.npy")
+        points_3d = np.load(f"out/{index}/points.npy")
         depth_edges = np.load(f"out/{index}/edges.npy")
         Q = np.argmax(Q, axis=-1)
-        assemble_objects_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_in_space, depth_image, annotation, train)
+        assemble_objects_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_3d, depth_image, annotation, train)
         train = False
         index += 1
     quit()
 
 if __name__ == '__main__':
     #create_training_set()
-    train_unary_classifier()
+    #train_unary_classifier()
     #quit()
     #assemble_objects_with_unary_classifier()
-    quit()
-    train_unary_classifier()
+    #quit()
+    #train_unary_classifier()
     quit()
     main()

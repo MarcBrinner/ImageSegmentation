@@ -11,7 +11,7 @@ from image_processing_models_GPU import *
 from calculate_normals import *
 from numba import njit, prange
 from load_images import *
-from image_operations import convert_depth_image
+from utils import convert_depth_image
 from skimage import measure
 from standard_values import *
 

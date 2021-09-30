@@ -546,10 +546,33 @@ def calculate_nearest_point_function():
 
 def extract_texture_function():
     resnet = tf.keras.applications.resnet50.ResNet50(include_top=False, weights='imagenet', input_shape=(480, 640, 3))
-    #pool = layers.AvgPool2D((3, 3), strides=(1, 1), padding="same")(resnet.layers[38].output)
-    #norm = tf.math.divide_no_nan(resnet.layers[38].output, tf.norm(resnet.layers[70].output, axis=-1, keepdims=True))
     model = Model(inputs=resnet.inputs, outputs=tf.squeeze(resnet.layers[17].output, axis=0))
     return lambda x: model(np.expand_dims(x, axis=0))
+
+def chi_squared_distances_model_2D(pool_size=(5, 5), strides=(2, 2)):
+    input = layers.Input(shape=(None, None, None))
+    number_of_surfaces = tf.shape(input)[-1]
+    pool = layers.AveragePooling2D(pool_size=pool_size, strides=strides)(input)
+    pool = tf.transpose(pool, (0, 3, 1, 2))
+    expansion_1 = tf.repeat(tf.expand_dims(pool, axis=1), repeats=[number_of_surfaces], axis=1)
+    expansion_2 = tf.repeat(tf.expand_dims(pool, axis=2), repeats=[number_of_surfaces], axis=2)
+    squared_difference = tf.square(tf.subtract(expansion_1, expansion_2))
+    addition = tf.add(expansion_1, expansion_2)
+    distance = tf.reduce_sum(tf.reduce_sum(tf.math.divide_no_nan(squared_difference, addition), axis=-1), axis=-1)[0]
+    model = Model(inputs=[input], outputs=distance)
+    return lambda histogram: model.predict(np.asarray([histogram]))
+
+def chi_squared_distances_model_1D():
+    input = layers.Input(shape=(None, None))
+    number_of_surfaces = tf.shape(input)[-1]
+    transpose = tf.transpose(input, (0, 2, 1))
+    expansion_1 = tf.repeat(tf.expand_dims(transpose, axis=1), repeats=[number_of_surfaces], axis=1)
+    expansion_2 = tf.repeat(tf.expand_dims(transpose, axis=2), repeats=[number_of_surfaces], axis=2)
+    squared_difference = tf.square(tf.subtract(expansion_1, expansion_2))
+    addition = tf.add(expansion_1, expansion_2)
+    distance = tf.reduce_sum(tf.math.divide_no_nan(squared_difference, addition), axis=-1)
+    model = Model(inputs=[input], outputs=distance[0])
+    return lambda histogram: model.predict(np.asarray([histogram]))
 
 if __name__ == '__main__':
     extract_texture_function()
