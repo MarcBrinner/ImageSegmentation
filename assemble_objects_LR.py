@@ -2,8 +2,9 @@ import numpy as np
 import pickle
 from find_planes import plot_surfaces
 from sklearn.linear_model import LogisticRegression
-from assemble_objects_CRF import get_GPU_models
+from assemble_objects_CRF import get_GPU_models, calculate_pairwise_similarity_features_for_surfaces, get_Y_value
 from load_images import load_image_and_surface_information
+from assemble_objects_rules import join_surfaces_according_to_join_matrix
 
 def create_training_set():
     models = get_GPU_models()
@@ -12,14 +13,14 @@ def create_training_set():
     for index in range(111):
         print(index)
         data = load_image_and_surface_information(index)
-        info = get_similarity_data_for_CRF(data)
-        num_boxes = np.shape(info[0])[0]
-        Y = get_Y_value(annotation, Q, num_surfaces, num_boxes)[0]
+        info = calculate_pairwise_similarity_features_for_surfaces(data, models)
+
+        Y = get_Y_value(data)[0]
         join_matrix = Y[0]
         not_join_matrix = Y[1]
 
-        for i in range(num_surfaces-1):
-            for j in range(num_surfaces-1):
+        for i in range(data["num_surfaces"]-1):
+            for j in range(data["num_surfaces"]-1):
                 if (a := join_matrix[i][j]) == 1:
                     labels.append(1)
                 elif (b := not_join_matrix[i][j]) == 1:
@@ -64,23 +65,23 @@ def assemble_objects_with_unary_classifier():
     clf = pickle.load(open("parameters/unary_potential_clf/clf.pkl", "rb"))
     models = get_GPU_models()
     for index in range(101, 111):
-        Q, depth_edges, rgb, lab, patches, angles, points_in_space, depth_image, annotation = load_image_and_surface_information(index)
-        info = get_similarity_data_for_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_in_space,
-                                           depth_image)
-        num_surfaces = int(np.max(Q) + 1)
+        data = load_image_and_surface_information(index)
+        info = calculate_pairwise_similarity_features_for_surfaces(data, models)
+
         input_indices = []
         inputs = []
-
-        for i in range(num_surfaces - 1):
-            for j in range(num_surfaces - 1):
+        for i in range(data["num_surfaces"] - 1):
+            for j in range(data["num_surfaces"] - 1):
                 inputs.append(np.asarray([np.sum(info[0][:, i] * info[0][:, j]), *[info[k][i, j] for k in range(1, 8)]]))
                 input_indices.append((i, j))
+
         predictions = clf.predict(inputs)
-        join_matrix = np.zeros((num_surfaces, num_surfaces))
+        join_matrix = np.zeros((data["num_surfaces"], data["num_surfaces"]))
         for i in range(len(predictions)):
             if predictions[i] == 1:
                 indices = input_indices[i]
                 join_matrix[indices[0]+1, indices[1]+1] = 1
                 join_matrix[indices[1]+1, indices[0]+1] = 1
-        s, r = assemble_objects.join_surfaces_according_to_join_matrix(join_matrix, Q, num_surfaces)
-        plot_surfaces(s)
+
+        new_surfaces, _ = join_surfaces_according_to_join_matrix(join_matrix, data["surfaces"], data["num_surfaces"])
+        plot_surfaces(new_surfaces)

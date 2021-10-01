@@ -2,6 +2,8 @@ import numpy as np
 import assemble_objects_rules
 import detect_objects
 import tensorflow as tf
+
+import load_images
 import process_surfaces as ps
 from utils import rgb_to_Lab
 from load_images import load_image
@@ -127,7 +129,8 @@ def custom_loss(y_actual, y_predicted):
             #+ 0.3 * entropy/num_entropies
     return error
 
-def get_initial_probabilities(num_labels, bbox_overlap):
+def get_initial_probabilities(data):
+    num_labels, bbox_overlap = data["num_surfaces"]-1, data["bbox_overlap"]
     num_boxes = np.shape(bbox_overlap)[0]
     potentials_surfaces = np.eye(num_labels, num_labels + num_boxes) * 1
     potentials_surfaces = potentials_surfaces + np.random.uniform(size=np.shape(potentials_surfaces))
@@ -183,13 +186,12 @@ def plot_prediction(prediction, surfaces):
 
 def assemble_objects_CRF(data, models, train=False):
     calculate_pairwise_similarity_features_for_surfaces(data, models)
-    num_labels = data["num_surfaces"] - 1
 
     CRF_model = models[-1]
 
-    Q_in = get_initial_probabilities(num_labels, data["bbox_overlap"])
+    Q_in = get_initial_probabilities(data)
     unary_in = Q_in.copy()
-    unary_in[num_labels:] = -1000
+    unary_in[data["num_surfaces"]-1:] = -1000
 
     input = [np.asarray([e]) for e in [Q_in, data["convexity"], data["sim_color"], data["sim_texture"],
                                        data["coplanarity"], data["sim_bboxes"], data["neighborhood_mat"]]]
@@ -215,24 +217,14 @@ def get_GPU_models():
 
 def main():
     models = get_GPU_models()
-    #for index in list(range(0, 111)):
     train = True
     index = 4
     while True:
         print(index)
-        depth, rgb, annotation = load_image(index)
-        lab = rgb_to_Lab(rgb)
-        Q = np.load(f"out/{index}/Q.npy")
-        depth_image = np.load(f"out/{index}/depth.npy")
-        angles = np.load(f"out/{index}/angles.npy")
-        patches = np.load(f"out/{index}/patches.npy")
-        points_3d = np.load(f"out/{index}/points.npy")
-        depth_edges = np.load(f"out/{index}/edges.npy")
-        Q = np.argmax(Q, axis=-1)
-        assemble_objects_CRF(Q, depth_edges, rgb, lab, patches, models, angles, points_3d, depth_image, annotation, train)
+        data = load_images.load_image_and_surface_information(index)
+        assemble_objects_CRF(data, models, train)
         train = False
         index += 1
-    quit()
 
 if __name__ == '__main__':
     #create_training_set()
