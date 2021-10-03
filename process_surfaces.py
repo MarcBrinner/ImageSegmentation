@@ -152,7 +152,7 @@ def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_poin
 
 def determine_convexity_for_candidates(data, candidates, closest_points):
     angles, neighbors, surfaces, points_3d, coplanarity, norm_image, num_surfaces = data["angles"], \
-                     data["neighbors"], data["surfaces"],  data["points_3D"], data["coplanarity"], data["norm"], data["num_surfaces"]
+                     data["neighbors"], data["surfaces"],  data["points_3d"], data["coplanarity"], data["norm"], data["num_surfaces"]
     candidates_convexity = candidates["convexity"]
     
     convex = np.zeros((num_surfaces, num_surfaces))
@@ -449,8 +449,7 @@ def determine_even_planes(data):
     return planes
 
 @njit()
-def determine_coplanarity(candidates, data):
-    centroids, average_normals, planes, num_surfaces = data["centroids"], data["avg_normals"], data["planes"], data["num_surfaces"]
+def determine_coplanarity(candidates, centroids, average_normals, planes, num_surfaces):
     coplanarity = np.zeros((num_surfaces, num_surfaces))
     for i in range(num_surfaces):
         if planes[i] > 0:
@@ -492,6 +491,14 @@ def calc_box_and_surface_overlap(data):
     return overlap_counter
 
 def create_bbox_similarity_matrix_from_box_surface_overlap(bbox_overlap_matrix):
+    num_boxes, num_labels = np.shape(bbox_overlap_matrix)
+    t = np.transpose(bbox_overlap_matrix)
+    ext_1 = np.tile(np.expand_dims(t, axis=0), [num_labels, 1, 1])
+    ext_2 = np.tile(np.expand_dims(t, axis=1), [1, num_labels, 1])
+    similarity = np.sum(ext_1 * ext_2, axis=-1)
+    return similarity
+
+def create_bbox_CRF_matrix(bbox_overlap_matrix):
     num_boxes, num_labels = np.shape(bbox_overlap_matrix)
     similarity_matrix = np.zeros((num_boxes + num_labels, num_boxes + num_labels))
     similarity_matrix[num_labels:, :num_labels] = bbox_overlap_matrix
@@ -621,8 +628,8 @@ def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_
     data["centroids"], centroid_indices = determine_surface_patch_centroids(data)
     data["surfaces"] = remove_disconnected_components(data["surfaces"], np.asarray(centroid_indices, dtype="int64"))
     data["texture"] = texture_model(data["rgb"])
-    data["hist_color"], data["hist_angles"], data["hist_texture"], data["avg_normals"] = determine_histograms_and_average_normals(data["lab"], data["angles"],
-                                                                                      data["surfaces"], data["texture"], data["patches"], data["num_surfaces"])
+    data["hist_color"], data["hist_angle"], data["hist_texture"], data["avg_normals"] = determine_histograms_and_average_normals(data["lab"], data["angles"],
+                                                                                      data["texture"], data["surfaces"], data["patches"], data["num_surfaces"])
     data["avg_normals"] = utils.angles_to_normals(data["avg_normals"])
     data["planes"] = determine_even_planes(data)
     data["neighbors"], data["border_centers"] = determine_neighboring_surfaces_and_border_centers(data["surfaces"], data["depth_edges"], data["num_surfaces"])

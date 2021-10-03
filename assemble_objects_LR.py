@@ -2,7 +2,7 @@ import numpy as np
 import pickle
 from find_planes import plot_surfaces
 from sklearn.linear_model import LogisticRegression
-from assemble_objects_CRF import get_GPU_models, calculate_pairwise_similarity_features_for_surfaces, get_Y_value
+from assemble_objects_CRF import get_GPU_models, calculate_pairwise_similarity_features_for_surfaces, get_Y_value, create_similarity_feature_matrix
 from load_images import load_image_and_surface_information
 from assemble_objects_rules import join_surfaces_according_to_join_matrix
 
@@ -13,20 +13,27 @@ def create_training_set():
     for index in range(111):
         print(index)
         data = load_image_and_surface_information(index)
-        info = calculate_pairwise_similarity_features_for_surfaces(data, models)
+        calculate_pairwise_similarity_features_for_surfaces(data, models)
 
         Y = get_Y_value(data)[0]
-        join_matrix = Y[0]
-        not_join_matrix = Y[1]
+        join_matrix = Y[0][:-data["num_bboxes"], :-data["num_bboxes"]]
+        not_join_matrix = Y[1][:-data["num_bboxes"], :-data["num_bboxes"]]
 
-        for i in range(data["num_surfaces"]-1):
-            for j in range(data["num_surfaces"]-1):
-                if (a := join_matrix[i][j]) == 1:
-                    labels.append(1)
-                elif (b := not_join_matrix[i][j]) == 1:
-                    labels.append(0)
-                if a > 0 or b > 0:
-                    inputs.append(np.asarray([np.sum(info[0][:, i] * info[0][:, j]), *[info[k][i, j] for k in range(1, 12)]]))
+        feature_matrix = create_similarity_feature_matrix(data)
+        index_matrix = (join_matrix + not_join_matrix) == 1
+        num_indices = np.sum(index_matrix)
+
+        labels = labels + list(np.ndarray.flatten(join_matrix[index_matrix]))
+        inputs = inputs + list(np.reshape(feature_matrix[index_matrix], (num_indices, 12)))
+
+        # for i in range(data["num_surfaces"]-1):
+        #     for j in range(data["num_surfaces"]-1):
+        #         if (a := join_matrix[i][j]) == 1:
+        #             labels.append(1)
+        #         elif (b := not_join_matrix[i][j]) == 1:
+        #             labels.append(0)
+        #         if a > 0 or b > 0:
+        #             inputs.append(np.asarray([np.sum(info[0][:, i] * info[0][:, j]), *[info[k][i, j] for k in range(1, 12)]]))
         if index == 100:
             np.save("data/train_in.npy", np.asarray(inputs))
             np.save("data/train_labels.npy", np.asarray(labels))
@@ -85,3 +92,6 @@ def assemble_objects_with_unary_classifier():
 
         new_surfaces, _ = join_surfaces_according_to_join_matrix(join_matrix, data["surfaces"], data["num_surfaces"])
         plot_surfaces(new_surfaces)
+
+if __name__ == '__main__':
+    create_training_set()

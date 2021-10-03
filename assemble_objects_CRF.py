@@ -149,7 +149,7 @@ def get_position_and_occlusion_infos(data):
     avg_positions, patch_points, surfaces, norm_image, num_surfaces = data["avg_pos"], data["patch_points"], data["surfaces"], data["norm"], data["num_surfaces"]
     input = ps.determine_occlusion_line_points(np.ones((num_surfaces, num_surfaces)), patch_points, avg_positions, num_surfaces)
     nearest_points_for_occlusion = ps.calculate_nearest_points(*input)
-    join_matrix, close_matrix, closest_points = ps.determine_occlusion_candidates_and_connection_infos(nearest_points_for_occlusion, surfaces, norm_image, num_surfaces)
+    join_matrix, close_matrix, closest_points = ps.determine_occlusion_candidates_and_connection_infos(nearest_points_for_occlusion, data)
     return join_matrix, close_matrix, closest_points
 
 def calculate_pairwise_similarity_features_for_surfaces(data, models):
@@ -157,17 +157,19 @@ def calculate_pairwise_similarity_features_for_surfaces(data, models):
 
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
+    candidates = {"convexity": np.ones((data["num_surfaces"], data["num_surfaces"]))}
     data["sim_color"] = color_similarity_model(data["hist_color"])
     data["sim_texture"] = ps.calculate_texture_similarities(data["hist_texture"], data["num_surfaces"])
-    data["sim_angles"] = angle_similarity_model(data["hist_angles"])/20
+    data["sim_angle"] = angle_similarity_model(data["hist_angle"])/20
 
     data["planes"] = ps.determine_even_planes(data)
-    data["coplanarity"] = ps.determine_coplanarity(np.ones((data["num_surfaces"], data["num_surfaces"])), data)
-    data["convex"], data["concave"], _ = assemble_objects_rules.determine_convexly_connected_surfaces(np.ones((data["num_surfaces"], data["num_surfaces"])), data)
+    data["coplanarity"] = ps.determine_coplanarity(candidates["convexity"], data["centroids"].astype("float64"), data["avg_normals"], data["planes"], data["num_surfaces"])
+    data["convex"], data["concave"], _ = assemble_objects_rules.determine_convexly_connected_surfaces(candidates, data)
     data["neighborhood_mat"] = ps.neighborhood_list_to_matrix(data)
     data["bboxes"] = object_detector(data["rgb"])
     data["bbox_overlap"] = ps.calc_box_and_surface_overlap(data)
-    data["bbox_similarities"] = ps.create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"])
+    data["bbox_crf_matrix"] = ps.create_bbox_CRF_matrix(data["bbox_overlap"])
+    data["bbox_similarity_matrix"] = ps.create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"])
     data["num_bboxes"] = np.shape(data["bbox_overlap"])[0]
     #detect_objects.show_bounding_boxes(rgb_image, bboxes)
     #plot_surfaces(surfaces)
@@ -176,6 +178,12 @@ def calculate_pairwise_similarity_features_for_surfaces(data, models):
     data["close_mat"][data["neighborhood_mat"] == 1] = 0
     data["distances"] = np.sqrt(np.sum(np.square(data["closest_points"] - np.swapaxes(data["closest_points"], axis1=0, axis2=1)), axis=-1))/500
     data["depth_extend_distances"] = ps.create_depth_extend_distance_matrix(data)/1000
+
+def create_similarity_feature_matrix(data):
+    keys = ["bbox_similarity_matrix", "sim_texture", "sim_color", "sim_angle", "convex", "coplanarity", "neighborhood_mat",
+            "concave", "distances", "close_mat", "occlusion_mat", "depth_extend_distances"]
+    matrix = np.stack([data[key][1:,1:] for key in keys], axis=-1)
+    return matrix
 
 def plot_prediction(prediction, surfaces):
     max_vals = np.argmax(prediction[0], axis=-1)
@@ -194,7 +202,7 @@ def assemble_objects_CRF(data, models, train=False):
     unary_in[data["num_surfaces"]-1:] = -1000
 
     input = [np.asarray([e]) for e in [Q_in, data["convexity"], data["sim_color"], data["sim_texture"],
-                                       data["coplanarity"], data["sim_bboxes"], data["neighborhood_mat"]]]
+                                       data["coplanarity"], data["bbox_crf_matrix"], data["neighborhood_mat"]]]
 
     if not train:
         prediction = CRF_model.predict(input)

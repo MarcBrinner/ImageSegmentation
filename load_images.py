@@ -21,7 +21,7 @@ def load_image(index):
 def load_image_and_surface_information(index):
     data = {}
     data["depth"], data["rgb"], data["annotation"] = load_image(index)
-    data["lang"] = utils.rgb_to_Lab(data["rgb"])
+    data["lab"] = utils.rgb_to_Lab(data["rgb"])
     data["surfaces"] = np.argmax(np.load(f"out/{index}/Q.npy"), axis=-1)
     data["depth"] = np.load(f"out/{index}/depth.npy")
     data["angles"] = np.load(f"out/{index}/angles.npy")

@@ -228,10 +228,10 @@ def conv_crf_learned_potentials(theta_1_1, theta_2_1, theta_3_1, theta_4_1, weig
     similarities_4 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_4), tf.broadcast_to(theta_4, tf.shape(differences_4))), axis=-1))
 
     similarities = tf.stack([similarities_1, similarities_2, similarities_3, similarities_4], axis=-1)
+    similarities = tf.reshape(similarities, (1, height, width, k*k, 4))
     dense_1_out = layers.Dense(12, activation="sigmoid")(similarities)
-    print(dense_1_out)
-    dense_2_out = layers.Dense(1, activation="relu")(dense_1_out)
-    concat_out = tf.concat([tf.reshape(dense_2_out, (1, height, width, k*k)), tf.ones((1, height, width, 1))/1000], axis=-1)
+    dense_2_out = tf.squeeze(layers.Dense(1, activation="relu")(dense_1_out), axis=-1)
+    concat_out = tf.concat([dense_2_out, tf.ones((1, height, width, 1))/1000], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(concat_out, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
@@ -548,8 +548,8 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
     return results
 
 
-def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=1, kernel_size=10):
-    div_x, div_y = 40, 40
+def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=1, kernel_size=7):
+    div_x, div_y = 200, 200
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -580,7 +580,7 @@ def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=1
             Y, indices = get_training_targets(data, div_x, div_y, size_x, size_y)
             X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, indices)
 
-            conv_crf_model.fit(X, Y, batch_size=1)
+            conv_crf_model.predict(X, batch_size=1)
 
             X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y,
                            range(div_y * div_x))
@@ -595,7 +595,7 @@ def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=1
 
 
 def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
-    div_x, div_y = 4, 4
+    div_x, div_y = 100, 100
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -629,6 +629,8 @@ def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
         Q[data["depth"] == 0] = prob
 
+        print("Done")
+        quit()
         inputs = get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
         out = conv_crf_model.predict(inputs, batch_size=1)
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
@@ -654,5 +656,5 @@ def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
     return results
 
 if __name__ == '__main__':
-    test_model_on_image_2(list(range(106, 111)), load_index=-1)
+    train_model_on_images_2(list(range(106, 111)), load_index=-1)
     quit()
