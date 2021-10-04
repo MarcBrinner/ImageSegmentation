@@ -4,6 +4,10 @@ import tensorflow_addons as tfa
 from standard_values import *
 from tensorflow.keras import layers, Model, initializers, optimizers, regularizers
 
+def print_tensor(input):
+    p = Print_Tensor()(input)
+    return p
+
 class Variable(layers.Layer):
     def __init__(self, initial_value, **kwargs):
         self.initial_value = initial_value
@@ -12,7 +16,7 @@ class Variable(layers.Layer):
 
     def build(self, input_shape):
         self.kernel = self.add_weight(name='weights',
-                                      shape=self.output_shape2, trainable=True,
+                                      shape=self.output_shape2, trainable=False,
                                       initializer=initializers.constant(self.initial_value), dtype=tf.float32)
         super(Variable, self).build(input_shape)
 
@@ -47,7 +51,7 @@ class Print_Tensor(layers.Layer):
         super(Print_Tensor, self).build(input_shape)
 
     def call(self, input_data):
-        print(input_data)
+        print(tf.reduce_max(tf.abs(input_data)))
         return input_data
 
     def compute_output_shape(self, input_shape):

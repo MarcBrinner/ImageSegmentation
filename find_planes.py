@@ -1,15 +1,58 @@
+import numpy as np
+
+import load_images
 from image_processing_models_GPU import normals_and_log_depth_model_GPU, get_angle_arrays, Counts,\
-    gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, regularizers, optimizers, Model, Components
+    gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, regularizers, optimizers, Model, Components, print_tensor
 from load_images import *
 from standard_values import *
 from plot_image import *
-
+from numpy.lib.stride_tricks import sliding_window_view
 physical_devices = tf.config.list_physical_devices('GPU')
 
 train_indices = [109, 108, 107, 105, 104, 103, 102, 101, 100]
 test_indices = [110, 106]
 
-variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight"]
+variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight", "dense_1", "dense_2"]
+
+def create_dataset(window=7):
+    w = 2*window + 1
+    pos_diffs = np.sqrt(np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1))/40
+
+    sliding_window = lambda x: np.swapaxes(sliding_window_view(x, (w, w), (0, 1)), -1, 2)
+    central_element = lambda x: np.expand_dims(np.expand_dims(x[:, :, window, window], axis=2), axis=2)
+    differences = lambda x: np.sqrt(np.sum(np.square(x - central_element(x)), axis=-1))
+
+    inputs = []
+    labels = []
+    for index in train_indices:
+        data = load_image_and_surface_information(index)
+        rgb_diffs = differences(sliding_window(data["rgb"])) / 50
+        angle_diffs = differences(sliding_window(data["angles"])) * 2
+
+        depth_windows = sliding_window(data["depth"])
+        depth_central = central_element(depth_windows)
+        depth_diffs = (depth_windows - depth_central) / depth_central  * 6
+        depth_diffs[depth_windows == 0] = 0
+
+        annotation_windows = sliding_window(data["annotation"])
+        annotation_centrals = central_element(annotation_windows)
+
+        diffs = np.stack([depth_diffs, angle_diffs, rgb_diffs, np.broadcast_to(pos_diffs, np.shape(angle_diffs))], axis=-1)
+        for i_1 in range(np.shape(diffs)[0]):
+            print(i_1)
+            for i_2 in range(np.shape(diffs)[1]):
+                for i_3 in range(window+1):
+                    for i_4 in range(w if i_3 < window else window):
+                        if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2, 0, 0]:
+                            if np.random.uniform() < 0.2:
+                                inputs.append(diffs[i_1, i_2, i_3, i_4])
+                                labels.append(1)
+                        else:
+                            inputs.append(diffs[i_1, i_2, i_3, i_4])
+                            labels.append(0)
+
+def train_LR_clf():
+    pass
 
 def print_parameters(model):
     for name in variable_names:
@@ -216,40 +259,45 @@ def conv_crf_learned_potentials(theta_1_1, theta_2_1, theta_3_1, theta_4_1, weig
     theta_4 = tf.expand_dims(theta_4_1, axis=1)
 
     differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), feature_1)
-    similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_1), tf.broadcast_to(theta_1, tf.shape(differences_1))), axis=-1))
+    similarities_1 = tf.sqrt(tf.reduce_sum(tf.square(differences_1), axis=-1))*6
 
     differences_2 = tf.subtract(windows_f_2, feature_2)
-    similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_2), tf.broadcast_to(theta_2, tf.shape(differences_2))), axis=-1))
+    similarities_2 = tf.sqrt(tf.reduce_sum(tf.square(differences_2), axis=-1))*2
 
     differences_3 = tf.subtract(windows_f_3, feature_3)
-    similarities_3 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_3), tf.broadcast_to(theta_3, tf.shape(differences_3))), axis=-1))
+    similarities_3 = tf.sqrt(tf.reduce_sum(tf.square(differences_3), axis=-1))/50
 
     differences_4 = tf.subtract(windows_f_4, feature_4)
-    similarities_4 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_4), tf.broadcast_to(theta_4, tf.shape(differences_4))), axis=-1))
+    similarities_4 = tf.sqrt(tf.reduce_sum(tf.square(differences_4), axis=-1))/40
 
     similarities = tf.stack([similarities_1, similarities_2, similarities_3, similarities_4], axis=-1)
     similarities = tf.reshape(similarities, (1, height, width, k*k, 4))
-    dense_1_out = layers.Dense(12, activation="sigmoid")(similarities)
-    dense_2_out = tf.squeeze(layers.Dense(1, activation="relu")(dense_1_out), axis=-1)
+    dense_1_out = layers.Dense(12, activation="sigmoid", name="dense_1")(similarities)
+    dense_2_out = tf.squeeze(layers.LeakyReLU()(layers.Dense(1, activation=None, name="dense_2")(dense_1_out)), axis=-1)
     concat_out = tf.concat([dense_2_out, tf.ones((1, height, width, 1))/1000], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(concat_out, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
     compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, 1, number_of_surfaces, 1])), axis=-1)
-    add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, layers.Multiply()([Variable2(weight, name="weight")(compatibility_values), compatibility_values])])
+    add = layers.Add()([unary_potentials, layers.Multiply()([Variable2(weight, name="weight")(compatibility_values), compatibility_values])])
 
     output = layers.Softmax()(-add)
 
-    model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, features_4, val], outputs=dense_2_out)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=False)
+    model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, features_4, val], outputs=output)
+    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-2, epsilon=0.1), metrics=[], run_eagerly=True)
     return model
 
 def custom_loss(y_actual, y_predicted):
     labels = tf.squeeze(tf.gather(y_actual, [0], axis=3), axis=3)
     weights = tf.squeeze(tf.gather(y_actual, [1], axis=3), axis=3)
-    error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(y_predicted - labels) * weights, axis=-1), axis=-1), axis=-1)
+
+    #error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(y_predicted - labels) * weights, axis=-1), axis=-1), axis=-1)
+    error_negative = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(y_predicted * (tf.ones_like(labels)-labels) * weights, axis=-1), axis=-1), axis=-1)
+    error_positive = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(labels - y_predicted)*labels*weights, axis=-1), axis=-1), axis=-1)
     accumulated_weights = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(weights, axis=-1), axis=-1), axis=-1)
-    error = tf.sqrt(tf.math.divide_no_nan(error, accumulated_weights)) * 100
+    error = (a:=tf.sqrt((b:=tf.math.divide_no_nan((c:=error_positive + error_negative), accumulated_weights)))) * 100
+    #if np.any(np.isnan(np.asarray(error))) or np.sum(np.asarray(error) < 0.0000001):
+    #    print()
     return error
 
 def find_annotation_correspondence_general(data):
@@ -289,7 +337,7 @@ def get_training_targets(data, div_x, div_y, size_x, size_y):
 
             if l != 0:
                 label = np.zeros(num_surfaces)
-                weight = np.ones(num_surfaces)
+                weight = np.ones(num_surfaces)*0.1
 
                 if len(correspondence_patch_specific[l]) < 2:
                     label[l] = 1
@@ -299,18 +347,20 @@ def get_training_targets(data, div_x, div_y, size_x, size_y):
                         for p in correspondence_general[ann]:
                             possible_labels.add(p)
                     for p in possible_labels:
-                        weight[p] = 0
+                        #weight[p] = 0
+                        label[p] = 1
             elif a != 0:
                 weight = np.ones(num_surfaces)
                 label = np.zeros(num_surfaces)
                 for m in correspondence_general[a]:
-                    weight[m] = 0
+                    label[m] = 1
+                    #weight[m] = 0
             else:
                 label = np.zeros(num_surfaces)
                 weight = np.zeros(num_surfaces)
-            if l != 0:
-                label = np.zeros(num_surfaces)
-                weight = np.zeros(num_surfaces)
+            #if l != 0:
+            #    label = np.zeros(num_surfaces)
+            #    weight = np.zeros(num_surfaces)
 
             Y[y][x][0] = label
             Y[y][x][1] = weight
@@ -548,8 +598,8 @@ def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
     return results
 
 
-def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=1, kernel_size=7):
-    div_x, div_y = 200, 200
+def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=10, kernel_size=7):
+    div_x, div_y = 50, 50
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
@@ -579,29 +629,64 @@ def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=1
 
             Y, indices = get_training_targets(data, div_x, div_y, size_x, size_y)
             X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, indices)
+            # tf.debugging.experimental.enable_dump_debug_info(
+            #    "/tmp/tfdbg2_logdir",
+            #    tensor_debug_mode="FULL_HEALTH",
+            #    circular_buffer_size=-1)
+            loss = 0
+            count = 0
+            optimizer = optimizers.Adam(learning_rate=1e-1, epsilon=0.1)
+            for epoch in range(20):
+                X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y,
+                                 range(div_y * div_x))
+                out = conv_crf_model.predict(X, batch_size=1)
+                Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"], True)
+                plot_surfaces(Q, True)
+                print_parameters(conv_crf_model)
+                for step in range(len(Y)):
+                    with tf.GradientTape() as tape:
+                        out = conv_crf_model([np.asarray([X[i][step]]).astype("float32") for i in range(len(X))])
+                        loss_value = custom_loss(np.asarray([Y[step]], dtype="float32"), out)
 
-            conv_crf_model.predict(X, batch_size=1)
+                    if np.sum(np.asarray(loss_value)) < 0.00001:
+                        continue
+                    grads = tape.gradient(loss_value, conv_crf_model.trainable_weights)
+                    grads = [tf.clip_by_value(g, -0.05, 0.05) for g in grads]
+                    #print(max([np.max(np.abs(g)) for g in grads]))
+                    if True in [np.any(np.isnan(np.asarray(g))) for g in grads]:
+                        print("NAN!!!")
+                        continue
+                    optimizer.apply_gradients(zip(grads, conv_crf_model.trainable_weights))
+                    loss += np.sum(np.asarray(loss_value))
+                    count += 1
+                    if step%100 == 0:
+                        print(f"{step}/{len(Y)}   Loss: {loss/count}")
+                        loss = 0
+                        count = 0
 
-            X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y,
-                           range(div_y * div_x))
+            conv_crf_model.fit(X, Y, batch_size=1, epochs=10)
+            #quit()
+
+            X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, range(div_y * div_x))
             out = conv_crf_model.predict(X, batch_size=1)
             Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
             Q[data["depth"] == 0] = prob
-            X = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, indices)
+            X = get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, indices)
 
-            conv_crf_model.fit(X, Y, batch_size=1)
+            conv_crf_model.fit(X, Y, batch_size=1, epochs=10)
 
-            save_parameters(conv_crf_model, save_index)
+            conv_crf_model.save_weights("crf_model.ckpt")
 
 
 def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
-    div_x, div_y = 100, 100
+    div_x, div_y = 10, 10
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
     normals_and_log_depth = normals_and_log_depth_model_GPU()
     surface_model = find_surfaces_model_GPU()
     conv_crf_model = conv_crf_learned_potentials(*list(np.reshape([5000.0, 20, 1/200, 1/80, 0.01],(5, 1, 1))), kernel_size, size_y, size_x)
+    conv_crf_model.load_weights("crf_model.ckpt")
     #onv_crf_model_intermediate = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x, True)
 
     print_parameters(conv_crf_model)
@@ -620,7 +705,7 @@ def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
         features = extract_features_2(data["depth"], data["rgb"], data["angles"], grid)
 
         data["patches"], data["depth_edges"] = surface_model(smoothed_depth)
-        plot_surfaces(data["patches"])
+        #plot_surfaces(data["patches"])
         data["num_surfaces"] = int(np.max(data["patches"]) + 1)
         unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(data)
 
@@ -629,8 +714,6 @@ def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
         Q[data["depth"] == 0] = prob
 
-        print("Done")
-        quit()
         inputs = get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
         out = conv_crf_model.predict(inputs, batch_size=1)
         Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
@@ -656,5 +739,6 @@ def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
     return results
 
 if __name__ == '__main__':
-    train_model_on_images_2(list(range(106, 111)), load_index=-1)
+    create_dataset()
+    train_model_on_images_2(list(range(106, 107)), load_index=-1)
     quit()

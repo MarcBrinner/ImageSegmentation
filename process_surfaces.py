@@ -1,5 +1,7 @@
 import numba
 import warnings
+
+import plot_image
 from standard_values import *
 from numba import njit
 from load_images import *
@@ -100,6 +102,7 @@ def extract_points(surface_patches, num_surfaces):
             points[surface_patches[y][x]].append([x, y])
 
     for i in range(num_surfaces):
+        print(i, len(points), len(points[i]))
         del points[i][0]
     return [np.asarray(p, dtype="float32") for p in points]
 

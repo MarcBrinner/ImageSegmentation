@@ -7,18 +7,14 @@ import load_images
 import process_surfaces as ps
 from utils import rgb_to_Lab
 from load_images import load_image
-from image_processing_models_GPU import Variable2, Print_Tensor, extract_texture_function, chi_squared_distances_model_1D,\
-                                        chi_squared_distances_model_2D
+from image_processing_models_GPU import Variable2, extract_texture_function, chi_squared_distances_model_1D,\
+                                        chi_squared_distances_model_2D, print_tensor
 from tensorflow.keras import layers, optimizers, Model, losses
 from standard_values import *
 from find_planes import plot_surfaces
 
 #initial_guess_parameters = [1.1154784, 2, 2, 1, 1.1, 3, -1, 2, 1.0323303, 0.24122038]
 initial_guess_parameters = [1, 2, 2, 1, 1.1, 3, -1, 2, 1, 0.02]
-
-def print_tensor(input):
-    p = Print_Tensor()(input)
-    return p
 
 variable_names = ["w_1", "w_2", "w_3", "w_4", "w_5", "w_6", "w_7", "w_8", "w_9", "weight"]
 

@@ -10,7 +10,7 @@ def create_training_set():
     models = get_GPU_models()
     inputs = []
     labels = []
-    for index in range(111):
+    for index in range(106, 111):
         print(index)
         data = load_image_and_surface_information(index)
         calculate_pairwise_similarity_features_for_surfaces(data, models)
