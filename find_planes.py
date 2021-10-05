@@ -1,18 +1,35 @@
 import numpy as np
-
+import pickle
 import load_images
 from image_processing_models_GPU import normals_and_log_depth_model_GPU, get_angle_arrays, Counts,\
     gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, regularizers, optimizers, Model, Components, print_tensor
 from load_images import *
 from standard_values import *
 from plot_image import *
+from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
-physical_devices = tf.config.list_physical_devices('GPU')
-
-train_indices = [109, 108, 107, 105, 104, 103, 102, 101, 100]
-test_indices = [110, 106]
+from sklearn.linear_model import LogisticRegression
 
 variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight", "dense_1", "dense_2"]
+
+@njit()
+def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
+    inputs = [np.asarray([0.0, 0.0, 0.0, 0.0])]
+    labels = [0.0]
+    for i_1 in range(np.shape(diffs)[0]):
+        print(i_1)
+        for i_2 in range(np.shape(diffs)[1]):
+            for i_3 in range(window + 1):
+                for i_4 in range(w if i_3 < window else window):
+                    if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2, 0, 0]:
+                        inputs.append(diffs[i_1, i_2, i_3, i_4])
+                        labels.append(1)
+                    else:
+                        inputs.append(diffs[i_1, i_2, i_3, i_4])
+                        labels.append(0)
+    del labels[0]
+    del inputs[0]
+    return inputs, labels
 
 def create_dataset(window=7):
     w = 2*window + 1
@@ -38,21 +55,21 @@ def create_dataset(window=7):
         annotation_centrals = central_element(annotation_windows)
 
         diffs = np.stack([depth_diffs, angle_diffs, rgb_diffs, np.broadcast_to(pos_diffs, np.shape(angle_diffs))], axis=-1)
-        for i_1 in range(np.shape(diffs)[0]):
-            print(i_1)
-            for i_2 in range(np.shape(diffs)[1]):
-                for i_3 in range(window+1):
-                    for i_4 in range(w if i_3 < window else window):
-                        if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2, 0, 0]:
-                            if np.random.uniform() < 0.2:
-                                inputs.append(diffs[i_1, i_2, i_3, i_4])
-                                labels.append(1)
-                        else:
-                            inputs.append(diffs[i_1, i_2, i_3, i_4])
-                            labels.append(0)
+        additional_inputs, additional_labels = extract_samples(diffs, annotation_windows, annotation_centrals, window, w)
+        inputs += additional_inputs
+        labels += additional_labels
+    np.save("data/assign_pixels_dataset/inputs.npy", np.asarray(inputs))
+    np.save("data/assign_pixels_dataset/labels.npy", np.asarray(labels))
 
 def train_LR_clf():
-    pass
+    inputs = np.load("data/assign_pixels_dataset/inputs.npy")
+    labels = np.load("data/assign_pixels_dataset/labels.npy")
+    clf = LogisticRegression(max_iter=1000, penalty="l2")
+    clf.fit(inputs, labels)
+    print(clf.coef_)
+    print(clf.intercept_)
+    pickle.dump(clf, open("parameters/unary_potential_clf/clf.pkl", "wb"))
+    print(np.sum(np.abs(clf.predict(inputs)-labels))/len(labels))
 
 def print_parameters(model):
     for name in variable_names:
@@ -213,7 +230,7 @@ def conv_crf(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=False)
     return model
 
-def conv_crf_learned_potentials(theta_1_1, theta_2_1, theta_3_1, theta_4_1, weight, kernel_size, height, width):
+def conv_crf_LR(LR_weights, LR_bias, weight, kernel_size, height, width):
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
     number_of_surfaces = tf.shape(Q)[-1]
@@ -248,16 +265,6 @@ def conv_crf_learned_potentials(theta_1_1, theta_2_1, theta_3_1, theta_4_1, weig
     feature_3 = tf.tile(f_3, [1, 1, 1, k, k, 1])
     feature_4 = tf.tile(f_4, [1, 1, 1, k, k, 1])
 
-    theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(feature_1), repeats=[1], axis=-1)
-    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_2_1")(feature_1), repeats=[2], axis=-1)
-    theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_3_1")(feature_1), repeats=[3], axis=-1)
-    theta_4_1 = tf.repeat(Variable(theta_4_1, name="theta_4_1")(feature_1), repeats=[2], axis=-1)
-
-    theta_1 = tf.expand_dims(theta_1_1, axis=1)
-    theta_2 = tf.expand_dims(theta_2_1, axis=1)
-    theta_3 = tf.expand_dims(theta_3_1, axis=1)
-    theta_4 = tf.expand_dims(theta_4_1, axis=1)
-
     differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), feature_1)
     similarities_1 = tf.sqrt(tf.reduce_sum(tf.square(differences_1), axis=-1))*6
 
@@ -272,9 +279,11 @@ def conv_crf_learned_potentials(theta_1_1, theta_2_1, theta_3_1, theta_4_1, weig
 
     similarities = tf.stack([similarities_1, similarities_2, similarities_3, similarities_4], axis=-1)
     similarities = tf.reshape(similarities, (1, height, width, k*k, 4))
-    dense_1_out = layers.Dense(12, activation="sigmoid", name="dense_1")(similarities)
-    dense_2_out = tf.squeeze(layers.LeakyReLU()(layers.Dense(1, activation=None, name="dense_2")(dense_1_out)), axis=-1)
-    concat_out = tf.concat([dense_2_out, tf.ones((1, height, width, 1))/1000], axis=-1)
+
+    LR_mult_out = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(similarities), similarities]), axis=-1)
+    LR_out = layers.Activation(activation="sigmoid")(layers.Add()([Variable2(LR_bias, name="LR_bias")(LR_mult_out)]))
+
+    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))/1000], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(concat_out, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
@@ -284,7 +293,6 @@ def conv_crf_learned_potentials(theta_1_1, theta_2_1, theta_3_1, theta_4_1, weig
     output = layers.Softmax()(-add)
 
     model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, features_4, val], outputs=output)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-2, epsilon=0.1), metrics=[], run_eagerly=True)
     return model
 
 def custom_loss(y_actual, y_predicted):

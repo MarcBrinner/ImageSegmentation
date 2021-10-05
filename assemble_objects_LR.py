@@ -35,13 +35,13 @@ def create_training_set():
         #         if a > 0 or b > 0:
         #             inputs.append(np.asarray([np.sum(info[0][:, i] * info[0][:, j]), *[info[k][i, j] for k in range(1, 12)]]))
         if index == 100:
-            np.save("data/train_in.npy", np.asarray(inputs))
-            np.save("data/train_labels.npy", np.asarray(labels))
+            np.save("data/LR_assemble_objects_datasets/train_in.npy", np.asarray(inputs))
+            np.save("data/LR_assemble_objects_datasets/train_labels.npy", np.asarray(labels))
             inputs = []
             labels = []
         elif index == 110:
-            np.save("data/test_in.npy", np.asarray(inputs))
-            np.save("data/test_labels.npy", np.asarray(labels))
+            np.save("data/LR_assemble_objects_datasets/test_in.npy", np.asarray(inputs))
+            np.save("data/LR_assemble_objects_datasets/test_labels.npy", np.asarray(labels))
             inputs = []
             labels = []
 
@@ -56,10 +56,10 @@ def quadratic_feature_expansion(data):
     return np.concatenate([data, reshaped], axis=1)
 
 def train_unary_classifier():
-    inputs_train = np.load("data/train_in.npy")
-    labels_train = np.load("data/train_labels.npy")
-    inputs_test = np.load("data/test_in.npy")
-    labels_test = np.load("data/test_labels.npy")
+    inputs_train = np.load("data/LR_assemble_objects_datasets/train_in.npy")
+    labels_train = np.load("data/LR_assemble_objects_datasets/train_labels.npy")
+    inputs_test = np.load("data/LR_assemble_objects_datasets/test_in.npy")
+    labels_test = np.load("data/LR_assemble_objects_datasets/test_labels.npy")
     clf = LogisticRegression(max_iter=1000, penalty="l2")
     clf.fit(inputs_train, labels_train)
     print(clf.coef_)
