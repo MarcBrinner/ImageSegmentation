@@ -1,8 +1,10 @@
-import numpy as np
+import gc
 import pickle
-import load_images
+
+import numpy as np
+
 from image_processing_models_GPU import normals_and_log_depth_model_GPU, get_angle_arrays, Counts,\
-    gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, regularizers, optimizers, Model, Components, print_tensor
+    gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, regularizers, optimizers, Model, Components, print_tensor, losses
 from load_images import *
 from standard_values import *
 from plot_image import *
@@ -11,84 +13,217 @@ from numpy.lib.stride_tricks import sliding_window_view
 from sklearn.linear_model import LogisticRegression
 
 variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight", "dense_1", "dense_2"]
+similarity_normalizers = [6, 2, 1/50, 1/40]
+gauss_CRF_parameters = list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 10000.0, 1 / 100, 10000.0, 1 / 200, 1 / 100, 10000.0, 20.0, 0.01], (12, 1, 1)))
+LR_CRF_parameters = [0.01, 5000]
+standard_kernel_size = 7
 
 @njit()
 def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
-    inputs = [np.asarray([0.0, 0.0, 0.0, 0.0])]
-    labels = [0.0]
+    inputs_0 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
+    inputs_1 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     for i_1 in range(np.shape(diffs)[0]):
-        print(i_1)
         for i_2 in range(np.shape(diffs)[1]):
+            if annotation_centrals[i_1, i_2] == -1:
+                continue
             for i_3 in range(window + 1):
                 for i_4 in range(w if i_3 < window else window):
-                    if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2, 0, 0]:
-                        inputs.append(diffs[i_1, i_2, i_3, i_4])
-                        labels.append(1)
-                    else:
-                        inputs.append(diffs[i_1, i_2, i_3, i_4])
-                        labels.append(0)
-    del labels[0]
-    del inputs[0]
-    return inputs, labels
+                    if annotation_windows[i_1, i_2, i_3, i_4] == -1:
+                        continue
+                    r = np.random.rand()
+                    if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2]:
+                        if r < 0.004 and annotation_centrals[i_1, i_2] > 0:
+                            inputs_1.append(diffs[i_1, i_2, i_3, i_4])
+                    elif r < 0.04:
+                        inputs_0.append(diffs[i_1, i_2, i_3, i_4])
+    del inputs_0[0]
+    del inputs_1[0]
+    return inputs_0, inputs_1
 
 def create_dataset(window=7):
     w = 2*window + 1
-    pos_diffs = np.sqrt(np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1))/40
+    pos_diffs = np.sqrt(np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1)) * similarity_normalizers[3]
 
     sliding_window = lambda x: np.swapaxes(sliding_window_view(x, (w, w), (0, 1)), -1, 2)
     central_element = lambda x: np.expand_dims(np.expand_dims(x[:, :, window, window], axis=2), axis=2)
     differences = lambda x: np.sqrt(np.sum(np.square(x - central_element(x)), axis=-1))
 
-    inputs = []
-    labels = []
+    inputs_0 = []
+    inputs_1 = []
+    save_index = 0
     for index in train_indices:
         data = load_image_and_surface_information(index)
-        rgb_diffs = differences(sliding_window(data["rgb"])) / 50
-        angle_diffs = differences(sliding_window(data["angles"])) * 2
+        rgb_diffs = differences(sliding_window(data["rgb"])) * similarity_normalizers[2]
+        angle_diffs = differences(sliding_window(data["angles"])) * similarity_normalizers[1]
 
         depth_windows = sliding_window(data["depth"])
         depth_central = central_element(depth_windows)
-        depth_diffs = (depth_windows - depth_central) / depth_central  * 6
-        depth_diffs[depth_windows == 0] = 0
+        depth_diffs = np.abs((depth_windows - depth_central) / depth_central)  * similarity_normalizers[0]
+        depth_diffs[data["depth"][window:-window, window:-window] == 0] = 0
 
-        annotation_windows = sliding_window(data["annotation"])
-        annotation_centrals = central_element(annotation_windows)
+        annotation = data["annotation"].copy().astype("int32")
+        annotation[data["depth"] == 0] = -1
+        annotation_windows = sliding_window(annotation)
 
         diffs = np.stack([depth_diffs, angle_diffs, rgb_diffs, np.broadcast_to(pos_diffs, np.shape(angle_diffs))], axis=-1)
-        additional_inputs, additional_labels = extract_samples(diffs, annotation_windows, annotation_centrals, window, w)
-        inputs += additional_inputs
-        labels += additional_labels
-    np.save("data/assign_pixels_dataset/inputs.npy", np.asarray(inputs))
-    np.save("data/assign_pixels_dataset/labels.npy", np.asarray(labels))
+        in_0, in_1 = extract_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w)
+        inputs_0.extend(in_0)
+        inputs_1.extend(in_1)
+        print(len(inputs_0), len(inputs_1))
+        if index > 0 and index%10 == 0 or index == train_indices[-1]:
+            np.save(f"data/assign_pixels_dataset/inputs_0_{save_index}.npy", np.asarray(inputs_0))
+            np.save(f"data/assign_pixels_dataset/inputs_1_{save_index}.npy", np.asarray(inputs_1))
+            save_index += 1
+            inputs_0 = []
+            inputs_1 = []
+        gc.collect()
+    join_datasets()
+
+@njit()
+def extract_samples_2(f_1, f_2, f_3, annotation_windows, annotation_centrals, window, w):
+    inputs_0_f_1 = [np.asarray([0.0, 0.0, 0.0])]
+    inputs_0_f_2 = [np.asarray([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]
+    inputs_0_f_3 = [np.asarray([0.0, 0.0, 0.0, 0.0, 0.0])]
+
+    inputs_1_f_1 = [np.asarray([0.0, 0.0, 0.0])]
+    inputs_1_f_2 = [np.asarray([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]
+    inputs_1_f_3 = [np.asarray([0.0, 0.0, 0.0, 0.0, 0.0])]
+
+    for i_1 in range(np.shape(f_1)[0]):
+        for i_2 in range(np.shape(f_1)[1]):
+            if annotation_centrals[i_1, i_2] == -1:
+                continue
+            for i_3 in range(window + 1):
+                for i_4 in range(w if i_3 < window else window):
+                    if annotation_windows[i_1, i_2, i_3, i_4] == -1:
+                        continue
+                    r = np.random.rand()
+                    if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2]:
+                        if r < 0.004 and annotation_centrals[i_1, i_2] > 0:
+                            inputs_1_f_1.append(f_1[i_1, i_2, i_3, i_4])
+                            inputs_1_f_2.append(f_2[i_1, i_2, i_3, i_4])
+                            inputs_1_f_3.append(f_3[i_1, i_2, i_3, i_4])
+                    elif r < 0.04:
+                        inputs_0_f_1.append(f_1[i_1, i_2, i_3, i_4])
+                        inputs_0_f_2.append(f_2[i_1, i_2, i_3, i_4])
+                        inputs_0_f_3.append(f_3[i_1, i_2, i_3, i_4])
+    del inputs_0_f_1[0]
+    del inputs_0_f_2[0]
+    del inputs_0_f_3[0]
+    del inputs_1_f_1[0]
+    del inputs_1_f_2[0]
+    del inputs_1_f_3[0]
+    return inputs_0_f_1, inputs_0_f_2, inputs_0_f_3, inputs_1_f_1, inputs_1_f_2, inputs_1_f_3
+
+def create_dataset_2(window=standard_kernel_size):
+    w = 2*window + 1
+    pos_diffs = np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1)
+    pos_diffs = np.expand_dims(np.tile(np.expand_dims(np.expand_dims(pos_diffs, axis=0), axis=0), [height-w+1, width-w+1, 1, 1]), axis=-1)
+
+    sliding_window = lambda x: np.swapaxes(sliding_window_view(x, (w, w), (0, 1)), -1, 2)
+    central_element = lambda x: np.expand_dims(np.expand_dims(x[:, :, window, window], axis=2), axis=2)
+    differences = lambda x: np.expand_dims(np.sum(np.square(x - central_element(x)), axis=-1), axis=-1)
+
+    inputs_0_f_1, inputs_0_f_2, inputs_0_f_3, inputs_1_f_1, inputs_1_f_2, inputs_1_f_3 = [list() for _ in range(6)]
+
+    save_index = 0
+    for index in train_indices:
+        data = load_image_and_surface_information(index)
+        rgb_diffs = differences(sliding_window(data["rgb"]))
+        angle_diffs = differences(sliding_window(data["angles"]))
+
+        depth_windows = sliding_window(data["depth"])
+        depth_central = central_element(depth_windows)
+        depth_diffs = np.abs((depth_windows - depth_central) / depth_central)
+        depth_diffs[data["depth"][window:-window, window:-window] == 0] = 0
+        depth_diffs = np.expand_dims(depth_diffs, axis=-1)
+
+        annotation = data["annotation"].copy().astype("int32")
+        annotation[data["depth"] == 0] = -1
+        annotation_windows = sliding_window(annotation)
+
+        f_1 = np.concatenate([pos_diffs, depth_diffs], axis=-1)
+        f_2 = np.concatenate([pos_diffs, depth_diffs, rgb_diffs], axis=-1)
+        f_3 = np.concatenate([pos_diffs, depth_diffs, angle_diffs], axis=-1)
+
+        inputs_0_f_1_new, inputs_0_f_2_new, inputs_0_f_3_new, inputs_1_f_1_new, inputs_1_f_2_new, inputs_1_f_3_new = extract_samples_2(f_1, f_2, f_3, annotation_windows, annotation[window:-window, window:-window], window, w)
+
+        inputs_0_f_1.extend(inputs_0_f_1_new)
+        inputs_0_f_2.extend(inputs_0_f_2_new)
+        inputs_0_f_3.extend(inputs_0_f_3_new)
+
+        inputs_1_f_1.extend(inputs_1_f_1_new)
+        inputs_1_f_2.extend(inputs_1_f_2_new)
+        inputs_1_f_3.extend(inputs_1_f_3_new)
+
+        print(len(inputs_0_f_1), len(inputs_1_f_1))
+        if index > 0 and index%5 == 0 or index == train_indices[-1]:
+            np.save(f"data/assign_pixels_dataset_gauss/inputs_0_1_{save_index}.npy", np.asarray(inputs_0_f_1))
+            np.save(f"data/assign_pixels_dataset_gauss/inputs_0_2_{save_index}.npy", np.asarray(inputs_0_f_2))
+            np.save(f"data/assign_pixels_dataset_gauss/inputs_0_3_{save_index}.npy", np.asarray(inputs_0_f_3))
+
+            np.save(f"data/assign_pixels_dataset_gauss/inputs_1_1_{save_index}.npy", np.asarray(inputs_1_f_1))
+            np.save(f"data/assign_pixels_dataset_gauss/inputs_1_2_{save_index}.npy", np.asarray(inputs_1_f_2))
+            np.save(f"data/assign_pixels_dataset_gauss/inputs_1_3_{save_index}.npy", np.asarray(inputs_1_f_3))
+            save_index += 1
+            inputs_0_f_1, inputs_0_f_2, inputs_0_f_3, inputs_1_f_1, inputs_1_f_2, inputs_1_f_3 = [list() for _ in range(6)]
+        gc.collect()
+    join_datasets_2()
+
+def join_datasets():
+    load = lambda x, y: np.load(f"data/assign_pixels_dataset/inputs_{x}_{y}.npy")
+    save = lambda x, y: np.save(f"data/assign_pixels_dataset/inputs_{x}.npy", y)
+    delete = lambda x, y: os.remove(f"data/assign_pixels_dataset/inputs_{x}_{y}.npy")
+
+    for i in range(2):
+        array = load(i, 0)
+        delete(i, 0)
+        for j in range(1, 10):
+            array = np.concatenate([array, load(i, j)], axis=0)
+            delete(i, j)
+        save(i, array)
+
+def join_datasets_2():
+    load = lambda x, y, z: np.load(f"data/assign_pixels_dataset_gauss/inputs_{x}_{y}_{z}.npy")
+    save = lambda x, y, z: np.save(f"data/assign_pixels_dataset_gauss/inputs_{x}_{y}.npy", z)
+    delete = lambda x, y, z: os.remove(f"data/assign_pixels_dataset_gauss/inputs_{x}_{y}_{z}.npy")
+
+    for i in range(2):
+        for j in range(1, 4):
+            array = load(i, j, 0)
+            #delete(i, j, 0)
+            for k in range(1, 20):
+                array = np.concatenate([array, load(i, j, k)], axis=0)
+                #delete(i, j, k)
+            save(i, j, array)
 
 def train_LR_clf():
-    inputs = np.load("data/assign_pixels_dataset/inputs.npy")
-    labels = np.load("data/assign_pixels_dataset/labels.npy")
+    inputs_0 = np.load("data/assign_pixels_dataset/inputs_0.npy")
+    inputs_1 = np.load("data/assign_pixels_dataset/inputs_1.npy")
+
+    train_0 = inputs_0[:int(len(inputs_0)*0.9)]
+    train_1 = inputs_1[:int(len(inputs_1)*0.9)]
+    test_0 = inputs_0[int(len(inputs_0) * 0.9):]
+    test_1 = inputs_1[int(len(inputs_1) * 0.9):]
+    train_X = np.concatenate([train_0, train_1], axis=0)
+    test_X = np.concatenate([test_0, test_1], axis=0)
+    train_Y = np.concatenate([np.zeros(int(len(inputs_0)*0.9)), np.ones(int(len(inputs_1)*0.9))], axis=0)
+    test_Y = np.concatenate([np.zeros(len(inputs_0) - int(len(inputs_0)*0.9)), np.ones(len(inputs_1) - int(len(inputs_1)*0.9))], axis=0)
+
     clf = LogisticRegression(max_iter=1000, penalty="l2")
-    clf.fit(inputs, labels)
+    clf.fit(train_X, train_Y)
     print(clf.coef_)
     print(clf.intercept_)
-    pickle.dump(clf, open("parameters/unary_potential_clf/clf.pkl", "wb"))
-    print(np.sum(np.abs(clf.predict(inputs)-labels))/len(labels))
+    print(np.sum(np.abs(clf.predict_proba(train_X)[:, 1]-train_Y))/len(train_Y))
+    print(np.sum(np.abs(clf.predict_proba(test_X)[:, 1]-test_Y))/len(test_Y))
+    clf.fit(np.concatenate([train_X, test_X], axis=0), np.concatenate([train_Y, test_Y], axis=0))
+    print(clf.coef_)
+    print(clf.intercept_)
+    pickle.dump(clf, open("parameters/pixel_similarity_clf/clf.pkl", "wb"))
 
-def print_parameters(model):
-    for name in variable_names:
-        try:
-            print(f"{name}: {model.get_layer(name).weights}")
-        except:
-            print(f"{name} not available.")
-
-def save_parameters(model, index):
-    array = np.zeros(len(variable_names), dtype="float64")
-    for i in range(len(variable_names)):
-        array[i] = model.get_layer(variable_names[i]).weights[0].numpy()
-    print(array)
-    np.save(f"parameters/{index}.npy", array)
-
-def load_parameters(index):
-    if index < 0:
-        return list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 10000.0, 1 / 100, 10000.0, 1 / 200, 1 / 100, 10000.0, 20.0, 0.01], (12, 1, 1)))
-    return list(np.reshape(np.load(f"parameters/{index}.npy"), (12, 1, 1)))
+def load_pixel_similarity_parameters():
+    clf = pickle.load(open("parameters/pixel_similarity_clf/clf.pkl", "rb"))
+    return clf.coef_, clf.intercept_
 
 def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, height=height, width=width, alpha=3, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
     # Find curvature score edges
@@ -126,7 +261,6 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, heig
     pixels = tf.pad(tf.where(tf.greater(tf.squeeze(tf.gather(central_points, [2], axis=-1), axis=-1), 0.001), pixels, 0), [[depth, depth], [depth, depth]], constant_values=0)
 
     # Smooth edges
-
     pixels = tf.where(tf.greater(tf.reduce_sum(tf.image.extract_patches(tf.expand_dims(tf.expand_dims(pixels, 0), -1), [1, 2*s1+1, 2*s1+1, 1], padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), axis=-1, keepdims=True), n1), 1, 0)
     pixels = tf.where(tf.greater(tf.reduce_sum(tf.image.extract_patches(pixels, [1, 2*s2+1, 2*s2+1, 1], padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), axis=-1), n2), 1, 0)
     pixels = tf.squeeze(pixels, axis=0)
@@ -150,10 +284,9 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, heig
     pixels = Components()(pixels)
 
     model = Model(inputs=depth_image_in, outputs=[pixels, edges])
-
     return lambda x: model.predict(np.expand_dims(x, axis=0), batch_size=1)
 
-def conv_crf(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width, intermediate=False):
+def conv_crf_Gauss(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width):
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
     number_of_surfaces = tf.shape(Q)[-1]
@@ -226,11 +359,11 @@ def conv_crf(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_
 
     output = layers.Softmax()(-add)
 
-    model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, val], outputs=similarity_sum if intermediate else output)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=False)
+    model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, val], outputs=output)
+    model.compile(loss=None, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=True)
     return model
 
-def conv_crf_LR(LR_weights, LR_bias, weight, kernel_size, height, width):
+def conv_crf_LR(LR_weights, LR_bias, weight, auxiliary_weight, kernel_size, height, width):
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
     number_of_surfaces = tf.shape(Q)[-1]
@@ -266,181 +399,54 @@ def conv_crf_LR(LR_weights, LR_bias, weight, kernel_size, height, width):
     feature_4 = tf.tile(f_4, [1, 1, 1, k, k, 1])
 
     differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), feature_1)
-    similarities_1 = tf.sqrt(tf.reduce_sum(tf.square(differences_1), axis=-1))*6
+    similarities_1 = tf.sqrt(tf.reduce_sum(tf.square(differences_1), axis=-1)) * similarity_normalizers[0]
 
     differences_2 = tf.subtract(windows_f_2, feature_2)
-    similarities_2 = tf.sqrt(tf.reduce_sum(tf.square(differences_2), axis=-1))*2
+    similarities_2 = tf.sqrt(tf.reduce_sum(tf.square(differences_2), axis=-1)) * similarity_normalizers[1]
 
     differences_3 = tf.subtract(windows_f_3, feature_3)
-    similarities_3 = tf.sqrt(tf.reduce_sum(tf.square(differences_3), axis=-1))/50
+    similarities_3 = tf.sqrt(tf.reduce_sum(tf.square(differences_3), axis=-1)) * similarity_normalizers[2]
 
     differences_4 = tf.subtract(windows_f_4, feature_4)
-    similarities_4 = tf.sqrt(tf.reduce_sum(tf.square(differences_4), axis=-1))/40
+    similarities_4 = tf.sqrt(tf.reduce_sum(tf.square(differences_4), axis=-1)) * similarity_normalizers[3]
 
     similarities = tf.stack([similarities_1, similarities_2, similarities_3, similarities_4], axis=-1)
     similarities = tf.reshape(similarities, (1, height, width, k*k, 4))
 
     LR_mult_out = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(similarities), similarities]), axis=-1)
-    LR_out = layers.Activation(activation="sigmoid")(layers.Add()([Variable2(LR_bias, name="LR_bias")(LR_mult_out)]))
+    LR_out = layers.Activation(activation="sigmoid")(layers.Add()([Variable2(LR_bias, name="LR_bias")(LR_mult_out), LR_mult_out]))
 
-    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))/1000], axis=-1)
+    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))/auxiliary_weight], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(concat_out, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
     compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, 1, number_of_surfaces, 1])), axis=-1)
-    add = layers.Add()([unary_potentials, layers.Multiply()([Variable2(weight, name="weight")(compatibility_values), compatibility_values])])
+    add = layers.Add()([unary_potentials, print_tensor(layers.Multiply()([Variable2(weight, name="weight")(compatibility_values), compatibility_values]))])
 
     output = layers.Softmax()(-add)
 
     model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, features_4, val], outputs=output)
+    #model.run_eagerly = True
     return model
 
-def custom_loss(y_actual, y_predicted):
-    labels = tf.squeeze(tf.gather(y_actual, [0], axis=3), axis=3)
-    weights = tf.squeeze(tf.gather(y_actual, [1], axis=3), axis=3)
-
-    #error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(y_predicted - labels) * weights, axis=-1), axis=-1), axis=-1)
-    error_negative = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(y_predicted * (tf.ones_like(labels)-labels) * weights, axis=-1), axis=-1), axis=-1)
-    error_positive = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(labels - y_predicted)*labels*weights, axis=-1), axis=-1), axis=-1)
-    accumulated_weights = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(weights, axis=-1), axis=-1), axis=-1)
-    error = (a:=tf.sqrt((b:=tf.math.divide_no_nan((c:=error_positive + error_negative), accumulated_weights)))) * 100
-    #if np.any(np.isnan(np.asarray(error))) or np.sum(np.asarray(error) < 0.0000001):
-    #    print()
-    return error
-
-def find_annotation_correspondence_general(data):
-    patches, annotation = data["patches"], data["annotation"]
-    mapping = {i: set() for i in range(int(np.max(annotation)+1))}
-    height, width = np.shape(patches)
-    for y in range(height):
-        for x in range(width):
-            index = patches[y][x]
-            if index == 0:
-                continue
-            mapping[annotation[y][x]].add(index)
-    return mapping
-
-def find_annotation_correspondence_patch_specific(data):
-    patches, annotation, num_surfaces = data["patches"], data["annotation"], data["num_surfaces"]
-    correspondence = {i: set() for i in range(num_surfaces)}
-    for y in range(height):
-        for x in range(width):
-            if (patch := patches[y][x]) != 0:
-                correspondence[patch].add(annotation[y][x])
-    return correspondence
-
-def get_training_targets(data, div_x, div_y, size_x, size_y):
-    patches, annotation, num_surfaces, depth_image = data["patches"], data["annotation"], data["num_surfaces"]+1, data["depth"]
-
-    correspondence_general = find_annotation_correspondence_general(data)
-    correspondence_patch_specific = find_annotation_correspondence_patch_specific(data)
-    height, width = np.shape(depth_image)
-    Y = np.zeros((height, width, 2, num_surfaces))
-    for y in range(height):
-        for x in range(width):
-            if depth_image[y][x] < 0.001:
-                continue
-            a = annotation[y][x]
-            l = patches[y][x]
-
-            if l != 0:
-                label = np.zeros(num_surfaces)
-                weight = np.ones(num_surfaces)*0.1
-
-                if len(correspondence_patch_specific[l]) < 2:
-                    label[l] = 1
-                else:
-                    possible_labels = set()
-                    for ann in correspondence_patch_specific[l]:
-                        for p in correspondence_general[ann]:
-                            possible_labels.add(p)
-                    for p in possible_labels:
-                        #weight[p] = 0
-                        label[p] = 1
-            elif a != 0:
-                weight = np.ones(num_surfaces)
-                label = np.zeros(num_surfaces)
-                for m in correspondence_general[a]:
-                    label[m] = 1
-                    #weight[m] = 0
-            else:
-                label = np.zeros(num_surfaces)
-                weight = np.zeros(num_surfaces)
-            #if l != 0:
-            #    label = np.zeros(num_surfaces)
-            #    weight = np.zeros(num_surfaces)
-
-            Y[y][x][0] = label
-            Y[y][x][1] = weight
-
-    Y_batch = []
-    indices = []
-    index = 0
-    for x in range(div_x):
-        for y in range(div_y):
-            new_sample = Y[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x]
-            weights_sum = np.sum(new_sample[:, :, 1, :])
-            if weights_sum == 0:
-                continue
-            else:
-                Y_batch.append(new_sample)
-                indices.append(index)
-            index += 1
-    return np.asarray(Y_batch), indices
-
-def get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, indices=None):
-    features_1, features_2, features_3 = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
+def get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y):
+    features_pad = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
     Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
-    f_1 = []
-    f_2 = []
-    f_3 = []
+    features_out = [list() for _ in features_pad]
     Q_in = []
     unary = []
 
-    index = -1
     for x in range(div_x):
         for y in range(div_y):
-            index += 1
-            if indices is not None and index not in indices:
-                continue
-            f_1.append(features_1[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            f_2.append(features_2[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            f_3.append(features_3[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
+            for i in range(len(features_pad)):
+                features_out[i].append(features_pad[i][y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
             Q_in.append(Q[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
             unary.append(unary_potentials[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x])
 
     val = np.zeros((len(unary), 1, 1, 1, np.shape(Q)[-1]))
     val[:, 0, 0, 0, -1] = 1
 
-    return [np.asarray(x) for x in [unary, Q_in, f_1, f_2, f_3, val]]
-
-def get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, indices=None):
-    features_1, features_2, features_3, features_4 = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
-    Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
-    f_1 = []
-    f_2 = []
-    f_3 = []
-    f_4 = []
-    Q_in = []
-    unary = []
-
-    index = -1
-    for x in range(div_x):
-        for y in range(div_y):
-            index += 1
-            if indices is not None and index not in indices:
-                continue
-            f_1.append(features_1[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            f_2.append(features_2[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            f_3.append(features_3[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            f_4.append(features_4[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            Q_in.append(Q[y*size_y:y*size_y + size_y+2*kernel_size, x*size_x:x*size_x + size_x + 2*kernel_size])
-            unary.append(unary_potentials[y*size_y:y*size_y + size_y, x*size_x:x*size_x + size_x])
-
-    val = np.zeros((len(unary), 1, 1, 1, np.shape(Q)[-1]))
-    val[:, 0, 0, 0, -1] = 1
-
-    return [np.asarray(x) for x in [unary, Q_in, f_1, f_2, f_3, f_4, val]]
+    return [np.asarray(x) for x in [unary, Q_in, *features_out, val]]
 
 def get_unary_potentials_and_initial_probabilities(data):
     patches, num_surfaces = data["patches"], data["num_surfaces"]
@@ -472,18 +478,8 @@ def extract_features(depth_image, lab_image, angles, grid):
 
     return (features_1_new, features_2_new, features_3_new)
 
-def extract_features_2(depth_image, lab_image, angles, grid):
-    features_1_new = np.expand_dims(depth_image, axis=-1)
-    features_2_new = angles
-    features_3_new = lab_image
-    features_4_new = grid
-    return (features_1_new, features_2_new, features_3_new, features_4_new)
-
-def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width, num_surfaces, intermediate=False):
-    if intermediate:
-        Q = np.zeros((height, width, *np.shape(outputs)[3:]))
-    else:
-        Q = np.zeros((height, width, num_surfaces+1))
+def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width):
+    Q = np.zeros((height, width, *np.shape(outputs)[3:]))
 
     index = 0
     for x in range(div_x):
@@ -492,261 +488,79 @@ def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width, num_s
             index += 1
     return Q
 
-def remove_noise(image):
-    max_image = np.argmax(image, axis=-1)
-    for y in range(1, height-1):
-        for x in range(1, width-1):
-            s = max_image[y][x]
-            if s != 0:
-                if max_image[y-1][x] != s and max_image[y+1][x] != s and max_image[y][x-1] != s and max_image[y][x-1] != s:
-                    image[y][x] = 0
-    return image
-
-def train_model_on_images(image_indices, load_index=-1, save_index=4, epochs=1, kernel_size=10):
-    div_x, div_y = 40, 40
-    size_x, size_y = int(width / div_x), int(height / div_y)
-
-    smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
-    normals_and_log_depth = normals_and_log_depth_model_GPU()
-    surface_model = find_surfaces_model_GPU()
-    conv_crf_model = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x)
-
+def find_surfaces(models, image_data, mode, sizes, kernel_size, plot_result=False):
+    div_x, div_y, size_x, size_y = sizes
+    smoothing_model, surface_model, normals_and_log_depth, conv_crf_model = models
     grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
     grid = np.stack([grid[1], grid[0]], axis=-1)
-    for epoch in range(epochs):
-        for image_index in image_indices:
-            print(f"Training on image {image_index}")
-            
-            data = {}
-            data["depth"], data["rgb"], data["annotation"] = load_image(image_index)
-            smoothed_depth = smoothing_model(data["depth"], grid)
 
-            log_depth, data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
-            features = extract_features(smoothed_depth, data["rgb"], data["angles"], grid)
+    data = {}
+    data["depth"], data["rgb"], data["annotation"] = image_data
+    smoothed_depth = smoothing_model(data["depth"], grid)
 
-            data["patches"], data["depth_edges"] = surface_model(smoothed_depth)
-            #plot_image.plot_surfaces(data["patches"])
-            data["num_surfaces"] = int(np.max(data["patches"]) + 1)
-            unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(data)
+    log_depth, data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
+    if mode == "LR":
+        features = [np.expand_dims(data["depth"], axis=-1), data["angles"], data["rgb"], grid]
+    else:
+        features = extract_features(data["depth"], data["rgb"], data["angles"], grid)
 
-            print_parameters(conv_crf_model)
+    data["patches"], data["depth_edges"] = surface_model(smoothed_depth)
+    data["num_surfaces"] = int(np.max(data["patches"]) + 1)
+    unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(data)
 
-            Y, indices = get_training_targets(data, div_x, div_y, size_x, size_y)
-            X = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, indices)
+    inputs = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y)
+    out = conv_crf_model.predict(inputs, batch_size=1)
+    Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width)
+    Q[data["depth"] == 0] = prob
 
-            conv_crf_model.fit(X, Y, batch_size=1)
+    inputs = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
+    out = conv_crf_model.predict(inputs, batch_size=1)
+    Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width)
+    Q[data["depth"] == 0] = prob
 
-            X = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, range(div_y*div_x))
-            out = conv_crf_model.predict(X, batch_size=1)
-            Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-            Q[data["depth"] == 0] = prob
-            X = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, indices)
+    inputs = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
+    out = conv_crf_model.predict(inputs, batch_size=1)
+    Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width)
+    Q[data["depth"] == 0] = 0
+    data["surfaces"] = np.argmax(Q, axis=-1)
+    data["surfaces"][data["surfaces"] == data["num_surfaces"]] = 0
 
-            conv_crf_model.fit(X, Y, batch_size=1)
+    if plot_result:
+        plot_surfaces(data["surfaces"])
+    return data
 
-            save_parameters(conv_crf_model, save_index)
-
-def test_model_on_image(image_indices, load_index=-1, kernel_size=7):
+def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_kernel_size, save_data=True, plot_result=False):
     div_x, div_y = 4, 4
     size_x, size_y = int(width / div_x), int(height / div_y)
 
     smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
     normals_and_log_depth = normals_and_log_depth_model_GPU()
     surface_model = find_surfaces_model_GPU()
-    conv_crf_model = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x)
-    conv_crf_model_intermediate = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x, True)
+    if mode == "LR":
+        conv_crf_model = conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x)
+    else:
+        conv_crf_model = conv_crf_Gauss(*gauss_CRF_parameters, kernel_size, size_y, size_x)
+    models = [smoothing_model, surface_model, normals_and_log_depth, conv_crf_model]
 
-    print_parameters(conv_crf_model)
-
-    results = []
-    grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
-    grid = np.stack([grid[1], grid[0]], axis=-1)
     for index in image_indices:
         print(index)
+        image_data = load_image(index)
 
-        data = {}
-        data["depth"], data["rgb"], data["annotation"] = load_image(index)
-        smoothed_depth = smoothing_model(data["depth"], grid)
+        data = find_surfaces(models, image_data, mode, [div_x, div_y, size_x, size_y], kernel_size, plot_result)
 
-        log_depth, data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
-        features = extract_features(data["depth"], data["rgb"], data["angles"], grid)
-
-        data["patches"], data["depth_edges"] = surface_model(smoothed_depth)
-        plot_surfaces(data["patches"])
-        data["num_surfaces"] = int(np.max(data["patches"]) + 1)
-        unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(data)
-
-        inputs = get_inputs(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y)
-        out = conv_crf_model.predict(inputs, batch_size=1)
-        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-        Q[data["depth"] == 0] = prob
-
-        inputs = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
-        out = conv_crf_model.predict(inputs, batch_size=1)
-        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-        Q[data["depth"] == 0] = prob
-
-        inputs = get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
-        out = conv_crf_model.predict(inputs, batch_size=1)
-        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-        Q[data["depth"] == 0] = 0
-        data["surfaces"] = np.argmax(Q, axis=-1)
-        data["surfaces"][data["surfaces"] == data["num_surfaces"]] = 0
-        plot_surfaces(data["surfaces"])
-
-        results.append(Q)
-        os.makedirs(f"out/{index}", exist_ok=True)
-        np.save(f"out/{index}/Q.npy", Q)
-        np.save(f"out/{index}/depth.npy", data["depth"])
-        np.save(f"out/{index}/angles.npy", data["angles"])
-        np.save(f"out/{index}/vectors.npy", data["vectors"])
-        np.save(f"out/{index}/patches.npy", data["patches"])
-        np.save(f"out/{index}/points.npy", data["points_3d"])
-        np.save(f"out/{index}/edges.npy", data["depth_edges"])
-    return results
-
-
-def train_model_on_images_2(image_indices, load_index=-1, save_index=4, epochs=10, kernel_size=7):
-    div_x, div_y = 50, 50
-    size_x, size_y = int(width / div_x), int(height / div_y)
-
-    smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
-    normals_and_log_depth = normals_and_log_depth_model_GPU()
-    surface_model = find_surfaces_model_GPU()
-    conv_crf_model = conv_crf_learned_potentials(*list(np.reshape([5000.0, 20, 1/200, 1/80, 0.01],(5, 1, 1))), kernel_size, size_y, size_x)
-
-    grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
-    grid = np.stack([grid[1], grid[0]], axis=-1)
-    for epoch in range(epochs):
-        for image_index in image_indices:
-            print(f"Training on image {image_index}")
-
-            data = {}
-            data["depth"], data["rgb"], data["annotation"] = load_image(image_index)
-            smoothed_depth = smoothing_model(data["depth"], grid)
-
-            log_depth, data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
-            features = extract_features_2(smoothed_depth, data["rgb"], data["angles"], grid)
-
-            data["patches"], data["depth_edges"] = surface_model(smoothed_depth)
-            # plot_image.plot_surfaces(data["patches"])
-            data["num_surfaces"] = int(np.max(data["patches"]) + 1)
-            unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(data)
-
-            print_parameters(conv_crf_model)
-
-            Y, indices = get_training_targets(data, div_x, div_y, size_x, size_y)
-            X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, indices)
-            # tf.debugging.experimental.enable_dump_debug_info(
-            #    "/tmp/tfdbg2_logdir",
-            #    tensor_debug_mode="FULL_HEALTH",
-            #    circular_buffer_size=-1)
-            loss = 0
-            count = 0
-            optimizer = optimizers.Adam(learning_rate=1e-1, epsilon=0.1)
-            for epoch in range(20):
-                X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y,
-                                 range(div_y * div_x))
-                out = conv_crf_model.predict(X, batch_size=1)
-                Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"], True)
-                plot_surfaces(Q, True)
-                print_parameters(conv_crf_model)
-                for step in range(len(Y)):
-                    with tf.GradientTape() as tape:
-                        out = conv_crf_model([np.asarray([X[i][step]]).astype("float32") for i in range(len(X))])
-                        loss_value = custom_loss(np.asarray([Y[step]], dtype="float32"), out)
-
-                    if np.sum(np.asarray(loss_value)) < 0.00001:
-                        continue
-                    grads = tape.gradient(loss_value, conv_crf_model.trainable_weights)
-                    grads = [tf.clip_by_value(g, -0.05, 0.05) for g in grads]
-                    #print(max([np.max(np.abs(g)) for g in grads]))
-                    if True in [np.any(np.isnan(np.asarray(g))) for g in grads]:
-                        print("NAN!!!")
-                        continue
-                    optimizer.apply_gradients(zip(grads, conv_crf_model.trainable_weights))
-                    loss += np.sum(np.asarray(loss_value))
-                    count += 1
-                    if step%100 == 0:
-                        print(f"{step}/{len(Y)}   Loss: {loss/count}")
-                        loss = 0
-                        count = 0
-
-            conv_crf_model.fit(X, Y, batch_size=1, epochs=10)
-            #quit()
-
-            X = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y, range(div_y * div_x))
-            out = conv_crf_model.predict(X, batch_size=1)
-            Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-            Q[data["depth"] == 0] = prob
-            X = get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y, indices)
-
-            conv_crf_model.fit(X, Y, batch_size=1, epochs=10)
-
-            conv_crf_model.save_weights("crf_model.ckpt")
-
-
-def test_model_on_image_2(image_indices, load_index=-1, kernel_size=7):
-    div_x, div_y = 10, 10
-    size_x, size_y = int(width / div_x), int(height / div_y)
-
-    smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
-    normals_and_log_depth = normals_and_log_depth_model_GPU()
-    surface_model = find_surfaces_model_GPU()
-    conv_crf_model = conv_crf_learned_potentials(*list(np.reshape([5000.0, 20, 1/200, 1/80, 0.01],(5, 1, 1))), kernel_size, size_y, size_x)
-    conv_crf_model.load_weights("crf_model.ckpt")
-    #onv_crf_model_intermediate = conv_crf(*load_parameters(load_index), kernel_size, size_y, size_x, True)
-
-    print_parameters(conv_crf_model)
-
-    results = []
-    grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
-    grid = np.stack([grid[1], grid[0]], axis=-1)
-    for index in image_indices:
-        print(index)
-
-        data = {}
-        data["depth"], data["rgb"], data["annotation"] = load_image(index)
-        smoothed_depth = smoothing_model(data["depth"], grid)
-
-        log_depth, data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
-        features = extract_features_2(data["depth"], data["rgb"], data["angles"], grid)
-
-        data["patches"], data["depth_edges"] = surface_model(smoothed_depth)
-        #plot_surfaces(data["patches"])
-        data["num_surfaces"] = int(np.max(data["patches"]) + 1)
-        unary_potentials, initial_Q, prob = get_unary_potentials_and_initial_probabilities(data)
-
-        inputs = get_inputs_2(features, unary_potentials, initial_Q, kernel_size, div_x, div_y, size_x, size_y)
-        out = conv_crf_model.predict(inputs, batch_size=1)
-        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-        Q[data["depth"] == 0] = prob
-
-        inputs = get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
-        out = conv_crf_model.predict(inputs, batch_size=1)
-        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-        Q[data["depth"] == 0] = prob
-
-        inputs = get_inputs_2(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y)
-        out = conv_crf_model.predict(inputs, batch_size=1)
-        Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width, data["num_surfaces"])
-        Q[data["depth"] == 0] = 0
-        data["surfaces"] = np.argmax(Q, axis=-1)
-        data["surfaces"][data["surfaces"] == data["num_surfaces"]] = 0
-        plot_surfaces(data["surfaces"])
-
-        results.append(Q)
-        os.makedirs(f"out/{index}", exist_ok=True)
-        np.save(f"out/{index}/Q.npy", Q)
-        np.save(f"out/{index}/depth.npy", data["depth"])
-        np.save(f"out/{index}/angles.npy", data["angles"])
-        np.save(f"out/{index}/vectors.npy", data["vectors"])
-        np.save(f"out/{index}/patches.npy", data["patches"])
-        np.save(f"out/{index}/points.npy", data["points_3d"])
-        np.save(f"out/{index}/edges.npy", data["depth_edges"])
-    return results
+        if save_data:
+            os.makedirs(f"out/{index}", exist_ok=True)
+            np.save(f"out/{index}/Q.npy", data["surfaces"])
+            np.save(f"out/{index}/depth.npy", data["depth"])
+            np.save(f"out/{index}/angles.npy", data["angles"])
+            np.save(f"out/{index}/vectors.npy", data["vectors"])
+            np.save(f"out/{index}/patches.npy", data["patches"])
+            np.save(f"out/{index}/points.npy", data["points_3d"])
+            np.save(f"out/{index}/edges.npy", data["depth_edges"])
 
 if __name__ == '__main__':
-    create_dataset()
-    train_model_on_images_2(list(range(106, 107)), load_index=-1)
+    #join_datasets_2()
+    #create_dataset_2()
+    quit()
+    find_surfaces_for_indices(list(range(111)), mode="LR", plot_result=True)
     quit()

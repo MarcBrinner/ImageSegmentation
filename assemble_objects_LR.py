@@ -69,7 +69,7 @@ def train_unary_classifier():
     print(np.sum(np.abs(clf.predict(inputs_test)-labels_test))/len(labels_test))
 
 def assemble_objects_with_unary_classifier():
-    clf = pickle.load(open("parameters/unary_potential_clf/clf.pkl", "rb"))
+    clf = pickle.load(open("parameters/pixel_similarity_clf/clf.pkl", "rb"))
     models = get_GPU_models()
     for index in range(101, 111):
         data = load_image_and_surface_information(index)
