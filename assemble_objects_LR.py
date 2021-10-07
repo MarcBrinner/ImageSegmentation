@@ -2,6 +2,7 @@ import numpy as np
 import pickle
 from find_planes import plot_surfaces
 from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
 from assemble_objects_CRF import get_GPU_models, calculate_pairwise_similarity_features_for_surfaces, get_Y_value, create_similarity_feature_matrix
 from load_images import load_image_and_surface_information
 from assemble_objects_rules import join_surfaces_according_to_join_matrix
@@ -55,21 +56,24 @@ def quadratic_feature_expansion(data):
     reshaped = np.reshape(mult, (num_samples, num_features**2))
     return np.concatenate([data, reshaped], axis=1)
 
-def train_unary_classifier():
+def train_unary_classifier(type="LR"):
     inputs_train = np.load("data/LR_assemble_objects_datasets/train_in.npy")
     labels_train = np.load("data/LR_assemble_objects_datasets/train_labels.npy")
     inputs_test = np.load("data/LR_assemble_objects_datasets/test_in.npy")
     labels_test = np.load("data/LR_assemble_objects_datasets/test_labels.npy")
-    clf = LogisticRegression(max_iter=1000, penalty="l2")
+    if type == "LR":
+        clf = LogisticRegression(max_iter=1000, penalty="l2")
+    else:
+        clf = DecisionTreeClassifier()
     clf.fit(inputs_train, labels_train)
     print(clf.coef_)
     print(clf.intercept_)
-    pickle.dump(clf, open("parameters/unary_potential_clf/clf.pkl", "wb"))
+    pickle.dump(clf, open(f"parameters/unary_potential_clf/clf_{type}.pkl", "wb"))
     print(np.sum(np.abs(clf.predict(inputs_train)-labels_train))/len(labels_train))
     print(np.sum(np.abs(clf.predict(inputs_test)-labels_test))/len(labels_test))
 
-def assemble_objects_with_unary_classifier():
-    clf = pickle.load(open("parameters/pixel_similarity_clf/clf.pkl", "rb"))
+def assemble_objects_with_unary_classifier(type="LR"):
+    clf = pickle.load(open(f"parameters/pixel_similarity_clf/clf_{type}.pkl", "rb"))
     models = get_GPU_models()
     for index in range(101, 111):
         data = load_image_and_surface_information(index)

@@ -221,6 +221,59 @@ def train_LR_clf():
     print(clf.intercept_)
     pickle.dump(clf, open("parameters/pixel_similarity_clf/clf.pkl", "wb"))
 
+def get_gauss_CLF(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, bias):
+    input_1 = layers.Input(shape=(2,))
+    input_2 = layers.Input(shape=(3,))
+    input_3 = layers.Input(shape=(3,))
+
+    theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(input_1), repeats=[2], axis=-1)
+    theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(input_1), repeats=[1], axis=-1)
+    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_2_1")(input_1), repeats=[2], axis=-1)
+    theta_2_2 = tf.repeat(Variable(theta_2_2, name="theta_2_2")(input_1), repeats=[1], axis=-1)
+    theta_2_3 = tf.repeat(Variable(theta_2_3, name="theta_2_3")(input_1), repeats=[3], axis=-1)
+    theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_3_1")(input_1), repeats=[2], axis=-1)
+    theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_3_2")(input_1), repeats=[1], axis=-1)
+    theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_3_3")(input_1), repeats=[2], axis=-1)
+
+    theta_1 = tf.expand_dims(tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1"), axis=1)
+    theta_2 = tf.expand_dims(tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2"), axis=1)
+    theta_3 = tf.expand_dims(tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3"), axis=1)
+
+    similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(input_1, tf.broadcast_to(theta_1, tf.shape(input_1))), axis=-1))
+    similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(input_2, tf.broadcast_to(theta_2, tf.shape(input_2))), axis=-1))
+    similarities_3 = tf.exp(-tf.reduce_sum(tf.multiply(input_3, tf.broadcast_to(theta_3, tf.shape(input_3))), axis=-1))
+
+    similarity_sum = layers.Add()([Variable2(bias, name="bias")(similarities_3),
+                                   layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
+                                   layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
+                                   layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3])])
+    out = tf.sigmoid(similarity_sum)
+    model = Model(inputs=[input_1, input_2, input_3], outputs=out)
+    model.compile(loss=losses.BinaryCrossentropy(), optimizer=optimizers.Adam(), run_eagerly=False)
+    return model
+
+def train_gauss_clf():
+    inputs_0_f_1 = np.load("data/assign_pixels_dataset_gauss/inputs_0_1.npy")
+    inputs_0_f_2 = np.load("data/assign_pixels_dataset_gauss/inputs_0_2.npy")
+    inputs_0_f_3 = np.load("data/assign_pixels_dataset_gauss/inputs_0_3.npy")
+    inputs_1_f_1 = np.load("data/assign_pixels_dataset_gauss/inputs_1_1.npy")
+    inputs_1_f_2 = np.load("data/assign_pixels_dataset_gauss/inputs_1_2.npy")
+    inputs_1_f_3 = np.load("data/assign_pixels_dataset_gauss/inputs_1_3.npy")
+
+    n_0 = int(0.9*len(inputs_0_f_1))
+    n_1 = int(0.9*len(inputs_1_f_1))
+    train_X = [np.concatenate([a[:n_0], b[:n_1]], axis=0) for a, b in [(inputs_0_f_1, inputs_1_f_1), (inputs_0_f_2, inputs_1_f_2), (inputs_0_f_3, inputs_1_f_3)]]
+    test_X = [np.concatenate([a[n_0:], b[n_1:]], axis=0) for a, b in [(inputs_0_f_1, inputs_1_f_1), (inputs_0_f_2, inputs_1_f_2), (inputs_0_f_3, inputs_1_f_3)]]
+
+    train_Y = np.concatenate([np.zeros(n_0), np.ones(n_1)], axis=0)
+    test_Y = np.concatenate([np.zeros(len(inputs_0_f_1) - n_0), np.ones(len(inputs_1_f_1) - n_1)], axis=0)
+
+    clf = get_gauss_CLF(*gauss_CRF_parameters[:-1], -3)
+    clf.fit(train_X, train_Y)
+
+    print(np.sum(np.abs(clf.predict(train_X)[:, 1]-train_Y))/len(train_Y))
+    print(np.sum(np.abs(clf.predict(test_X)[:, 1]-test_Y))/len(test_Y))
+
 def load_pixel_similarity_parameters():
     clf = pickle.load(open("parameters/pixel_similarity_clf/clf.pkl", "rb"))
     return clf.coef_, clf.intercept_
@@ -350,6 +403,84 @@ def conv_crf_Gauss(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, th
     similarity_sum = layers.Add()([layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
                                    layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
                                    layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3])])
+    similarity_sum = tf.concat([tf.reshape(similarity_sum, (1, height, width, k*k)), tf.ones((1, height, width, 1))/1000], axis=-1)
+    windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
+    messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
+
+    compatibility_values = tf.reduce_sum(tf.multiply(matrix, tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, 1, number_of_surfaces, 1])), axis=-1)
+    add = layers.Add(activity_regularizer=regularizers.l2(0.0001))([unary_potentials, layers.Multiply()([Variable2(weight, name="weight")(compatibility_values), compatibility_values])])
+
+    output = layers.Softmax()(-add)
+
+    model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, val], outputs=output)
+    model.compile(loss=None, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=True)
+    return model
+
+def conv_crf_Gauss_learned(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, bias, weight, kernel_size, height, width):
+    k = kernel_size*2+1
+    Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
+    number_of_surfaces = tf.shape(Q)[-1]
+    unary_potentials = layers.Input(shape=(height, width, None), dtype=tf.float32)
+    val = layers.Input(batch_shape=(1, 1, 1, 1, None))
+    matrix = tf.tile(tf.reshape(tf.ones((number_of_surfaces, number_of_surfaces)) - tf.eye(number_of_surfaces, number_of_surfaces),
+                               (1, 1, 1, number_of_surfaces, number_of_surfaces)), [1, height, width, 1, 1])
+
+    mask_np = np.ones((1, 1, 1, k, k, 1))
+    mask_np[0, 0, 0, kernel_size, kernel_size, 0] = 0
+    mask = tf.constant(mask_np, dtype=tf.float32)
+
+    features_1 = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, 3), dtype=tf.float32)
+    features_2 = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, 6), dtype=tf.float32)
+    features_3 = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, 5), dtype=tf.float32)
+
+    mask_1 = tf.constant([0.0, 0.0, 1.0], dtype=tf.float32)
+    mask_2 = tf.constant([0.0, 0.0, 1.0, 0.0, 0.0, 0.0], dtype=tf.float32)
+    mask_3 = tf.constant([0.0, 0.0, 1.0, 0.0, 0.0], dtype=tf.float32)
+
+    windows_Q = tf.reshape(tf.image.extract_patches(Q, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, number_of_surfaces))
+    windows_Q = tf.multiply(windows_Q, tf.broadcast_to(mask, tf.shape(windows_Q)))
+    windows_f_1 = tf.reshape(tf.image.extract_patches(features_1, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 3))
+    windows_f_2 = tf.reshape(tf.image.extract_patches(features_2, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 6))
+    windows_f_3 = tf.reshape(tf.image.extract_patches(features_3, [1, k, k, 1], padding='VALID', strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (1, height, width, k, k, 5))
+
+    f_1 = tf.gather(tf.gather(windows_f_1, [kernel_size], axis=3), [kernel_size], axis=4)
+    f_2 = tf.gather(tf.gather(windows_f_2, [kernel_size], axis=3), [kernel_size], axis=4)
+    f_3 = tf.gather(tf.gather(windows_f_3, [kernel_size], axis=3), [kernel_size], axis=4)
+
+    feature_1 = tf.tile(f_1, [1, 1, 1, k, k, 1])
+    feature_2 = tf.tile(f_2, [1, 1, 1, k, k, 1])
+    feature_3 = tf.tile(f_3, [1, 1, 1, k, k, 1])
+
+    div_1 = tf.math.pow(f_1, mask_1)
+    div_2 = tf.math.pow(f_2, mask_2)
+    div_3 = tf.math.pow(f_3, mask_3)
+
+    theta_1_1 = tf.repeat(Variable(theta_1_1, name="theta_1_1")(feature_1), repeats=[2], axis=-1)
+    theta_1_2 = tf.repeat(Variable(theta_1_2, name="theta_1_2")(feature_1), repeats=[1], axis=-1)
+    theta_2_1 = tf.repeat(Variable(theta_2_1, name="theta_2_1")(feature_1), repeats=[2], axis=-1)
+    theta_2_2 = tf.repeat(Variable(theta_2_2, name="theta_2_2")(feature_1), repeats=[1], axis=-1)
+    theta_2_3 = tf.repeat(Variable(theta_2_3, name="theta_2_3")(feature_1), repeats=[3], axis=-1)
+    theta_3_1 = tf.repeat(Variable(theta_3_1, name="theta_3_1")(feature_1), repeats=[2], axis=-1)
+    theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_3_2")(feature_1), repeats=[1], axis=-1)
+    theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_3_3")(feature_1), repeats=[2], axis=-1)
+
+    theta_1 = tf.expand_dims(tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1"), axis=1)
+    theta_2 = tf.expand_dims(tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2"), axis=1)
+    theta_3 = tf.expand_dims(tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3"), axis=1)
+
+    differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), div_1)
+    similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_1), tf.broadcast_to(theta_1, tf.shape(differences_1))), axis=-1))
+
+    differences_2 = tf.math.divide_no_nan(tf.subtract(windows_f_2, feature_2), div_2)
+    similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_2), tf.broadcast_to(theta_2, tf.shape(differences_2))), axis=-1))
+
+    differences_3 = tf.math.divide_no_nan(tf.subtract(windows_f_3, feature_3), div_3)
+    similarities_3 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_3), tf.broadcast_to(theta_3, tf.shape(differences_3))), axis=-1))
+
+    similarity_sum = tf.sigmoid(layers.Add()([Variable2(bias, name="bias")(similarities_1),
+                                   layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
+                                   layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
+                                   layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3])]))
     similarity_sum = tf.concat([tf.reshape(similarity_sum, (1, height, width, k*k)), tf.ones((1, height, width, 1))/1000], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)

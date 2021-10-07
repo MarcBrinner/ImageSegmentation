@@ -65,28 +65,20 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
     new_Q = tf.math.divide_no_nan(new_Q, tf.reduce_sum(new_Q, axis=-1, keepdims=True))
     return new_Q
 
-def mean_field_CRF(w_1, w_2, w_3, w_4, w_5, w_6, w_7, w_8, w_9, weight, num_iterations=10):
+def mean_field_CRF(box_weight_1, boxes_weight_2, box_bias, weight, LR_weights, LR_bias, num_iterations=10):
     Q_in = layers.Input(shape=(None, None))
-    #unary_in = layers.Input(shape=(None, None))
-    num_labels = tf.shape(Q_in)[1]
-
-    convexity_in = layers.Input(shape=(None, None))
-    color_in = layers.Input(shape=(None, None))
-    texture_in = layers.Input(shape=(None, None))
-    coplanarity_in = layers.Input(shape=(None, None))
+    counts = layers.Input(shape=(2,))
+    features = layers.Input(shape=(None, None, None))
     boxes_in = layers.Input(shape=(None, None))
-    neighborhood_in = layers.Input(shape=(None, None))
+    boxes_sim = (tf.sigmoid(layers.Add()([Variable2(box_bias, name="box_bias")(boxes_in), layers.Multiply()([Variable2(box_weight_1, name="box_weight_1")(boxes_in), boxes_in])])) - 0.5)
 
-    boxes = (tf.sigmoid(layers.Add()([Variable2(w_7, name="w_7")(boxes_in), layers.Multiply()([Variable2(w_8, name="w_8")(boxes_in), boxes_in])])) - 0.5) * 2
+    linear_LR = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(features), features]), axis=-1)
+    features_LR = tf.sigmoid(layers.Add([Variable2(LR_bias, name="LR_bias")(linear_LR), linear_LR]))
 
-    pairwise_potentials = layers.Add()([layers.Multiply()([-Variable2(w_1, name="w_1")(convexity_in), convexity_in]),
-                                        #layers.Multiply()([Variable2(w_2, name="w_2")(color_in), color_in]),
-                                        #layers.Multiply()([Variable2(w_3, name="w_3")(texture_in), texture_in]),
-                                        #layers.Multiply()([-Variable2(w_4, name="w_4")(coplanarity_in), coplanarity_in]),
-                                        #layers.Multiply()([-Variable2(w_6, name="w_6")(neighborhood_in), neighborhood_in]),
-                                        Variable2(w_9, name="w_9")(neighborhood_in)])
-    num_boxes = num_labels - tf.shape(pairwise_potentials)[1]
-    pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]]) #+ layers.Multiply()([-Variable2(w_5, name="w_5")(boxes), boxes])
+    num_labels = counts[:, 0]
+    num_boxes = counts[:, 1]
+
+    pairwise_potentials = tf.pad(features_LR, [[0, 0], [0, num_boxes], [0, num_boxes]]) + layers.Multiply()([Variable2(boxes_weight_2, name="box_weight_2")(boxes_sim), boxes_sim])
 
     matrix_1 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=-1)
     matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=0)
@@ -96,7 +88,32 @@ def mean_field_CRF(w_1, w_2, w_3, w_4, w_5, w_6, w_7, w_8, w_9, weight, num_iter
         Q = mean_field_iteration(Q_in, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight)
     output = Q
 
-    model = Model(inputs=[Q_in, convexity_in, color_in, texture_in, coplanarity_in, boxes_in, neighborhood_in], outputs=output)
+    model = Model(inputs=[Q_in, features, boxes_in, counts], outputs=output)
+    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=True)
+    return model
+
+def mean_field_CRF_test(feature_weight, LR_bias, weight, num_iterations=10):
+    Q_in = layers.Input(shape=(None, None))
+    counts = layers.Input(shape=(2,))
+    feature = layers.Input(shape=(None, None, None))
+
+    linear_LR = tf.reduce_sum(layers.Multiply()([Variable2(feature_weight, name="feature_weight")(feature), feature]), axis=-1)
+    features_LR = tf.sigmoid(layers.Add([Variable2(LR_bias, name="LR_bias")(linear_LR), linear_LR]))
+
+    num_labels = counts[:, 0]
+    num_boxes = counts[:, 1]
+
+    pairwise_potentials = tf.pad(features_LR, [[0, 0], [0, num_boxes], [0, num_boxes]])
+
+    matrix_1 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=-1)
+    matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=0)
+    weight = Variable2(weight, name="weight")(Q_in)
+    Q = Q_in
+    for _ in range(num_iterations):
+        Q = mean_field_iteration(Q_in, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight)
+    output = Q
+
+    model = Model(inputs=[Q_in, feature, counts], outputs=output)
     model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=True)
     return model
 
