@@ -102,7 +102,6 @@ def extract_points(surface_patches, num_surfaces):
             points[surface_patches[y][x]].append([x, y])
 
     for i in range(num_surfaces):
-        print(i, len(points), len(points[i]))
         del points[i][0]
     return [np.asarray(p, dtype="float32") for p in points]
 
@@ -156,8 +155,7 @@ def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_poin
 def determine_convexity_for_candidates(data, candidates, closest_points):
     angles, neighbors, surfaces, points_3d, coplanarity, norm_image, num_surfaces = data["angles"], \
                      data["neighbors"], data["surfaces"],  data["points_3d"], data["coplanarity"], data["norm"], data["num_surfaces"]
-    candidates_convexity = candidates["convexity"]
-    
+
     convex = np.zeros((num_surfaces, num_surfaces))
     concave = np.zeros((num_surfaces, num_surfaces))
     new_surfaces = surfaces.copy()
@@ -208,7 +206,7 @@ def determine_convexity_for_candidates(data, candidates, closest_points):
             above, below = determine_convexity_with_above_and_below_line(np.asarray(normal_1, dtype="float32"), np.asarray(normal_2, dtype="float32"),
                                                                          space_point_1, space_point_2, c_1, c_2, points_3d)
 
-            if (candidates_convexity[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*1.6) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)):
+            if (candidates[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*1.6) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)):
                 convex[i][surface_2] = 1
                 convex[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -292,7 +290,6 @@ def determine_histograms_and_average_normals(lab_image, angle_image, texture_ima
     return histograms_color, histograms_angles, histograms_texture, all_angles_sum
 
 def determine_occlusion_line_points(candidates, point_sets, target_points, num_surfaces):
-    #centroids, patch_points, num_surfaces = data["centroids"], data["patch_points"], data["num_surfaces"]
     centroid_inputs = []
     points_inputs = []
 
@@ -358,7 +355,9 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
         index_1 += 1
 
     for i in range(num_surfaces):
+        i = 9
         for j in range(i+1, num_surfaces):
+            j = 20
             if candidates_all[i][j] == 0:
                 continue
             l_1 = relabeling[i]
@@ -402,7 +401,7 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
                 index += 1
             if zero_counter >= 45 or other_surface_counter >= 3:
                 other_index = True
-            if (not other_index and (candidates_curved[i][j] == 0) and coplanarity[i][j] == 0):
+            if (not other_index and (candidates_curved[i][j] == 0) and coplanarity[i][j] == 0) or (not other_index and coplanarity[i][j] == 0 and zero_counter > 8):
                 continue
 
             d_1 = norm_image[pos_1[1]][pos_1[0]]
@@ -417,7 +416,7 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
                 for k in range(index_2 - index_1 - 1):
                     p = positions[index_1 + k + 1]
                     s = surfaces[p[1]][p[0]]
-                    if norm_image[p[1]][p[0]] > k * index_dif + d_1 + 1 and s != 0:
+                    if norm_image[p[1]][p[0]] > k * index_dif + d_1 + 1 and s not in [0, i, j]:
                         occluded = False
                         break
 

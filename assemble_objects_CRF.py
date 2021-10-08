@@ -14,7 +14,7 @@ from standard_values import *
 from find_planes import plot_surfaces
 
 #initial_guess_parameters = [1.1154784, 2, 2, 1, 1.1, 3, -1, 2, 1.0323303, 0.24122038]
-initial_guess_parameters = [1, 2, 2, 1, 1.1, 3, -1, 2, 1, 0.02]
+initial_guess_parameters = [1, 2, 2, 1, 1.1, 0.02]
 
 variable_names = ["w_1", "w_2", "w_3", "w_4", "w_5", "w_6", "w_7", "w_8", "w_9", "weight"]
 
@@ -67,16 +67,16 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
 
 def mean_field_CRF(box_weight_1, boxes_weight_2, box_bias, weight, LR_weights, LR_bias, num_iterations=10):
     Q_in = layers.Input(shape=(None, None))
-    counts = layers.Input(shape=(2,))
+    counts = layers.Input(shape=(2,), dtype=tf.int32)
     features = layers.Input(shape=(None, None, None))
     boxes_in = layers.Input(shape=(None, None))
     boxes_sim = (tf.sigmoid(layers.Add()([Variable2(box_bias, name="box_bias")(boxes_in), layers.Multiply()([Variable2(box_weight_1, name="box_weight_1")(boxes_in), boxes_in])])) - 0.5)
 
     linear_LR = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(features), features]), axis=-1)
-    features_LR = tf.sigmoid(layers.Add([Variable2(LR_bias, name="LR_bias")(linear_LR), linear_LR]))
+    features_LR = tf.sigmoid(layers.Add()([Variable2(LR_bias, name="LR_bias")(linear_LR), linear_LR]))
 
-    num_labels = counts[:, 0]
-    num_boxes = counts[:, 1]
+    num_labels = counts[0, 0]
+    num_boxes = counts[0, 1]
 
     pairwise_potentials = tf.pad(features_LR, [[0, 0], [0, num_boxes], [0, num_boxes]]) + layers.Multiply()([Variable2(boxes_weight_2, name="box_weight_2")(boxes_sim), boxes_sim])
 

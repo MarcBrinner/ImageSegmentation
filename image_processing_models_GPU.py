@@ -52,7 +52,8 @@ class Print_Tensor(layers.Layer):
 
     def call(self, input_data):
         #print(tf.reduce_max(tf.abs(input_data)))
-        print(tf.abs(input_data))
+        #print(tf.abs(input_data))
+        print(input_data)
         return input_data
 
     def compute_output_shape(self, input_shape):

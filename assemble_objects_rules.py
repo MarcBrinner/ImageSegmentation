@@ -80,9 +80,9 @@ def join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_surfaces):
             surfaces[y][x] = labels[surfaces[y][x]]
     return surfaces, labels
 
-def remove_convex_connections_after_occlusion_reasoning(join_matrices, data):
+def remove_concave_connections_after_occlusion_reasoning(join_matrices, data):
     similarity = data["sim_color"] + data["sim_texture"]
-    join_matrix_occlusion, join_matrix_before_occlusion = join_matrices["convex"], join_matrices["occlusion"]
+    join_matrix_occlusion, join_matrix_before_occlusion = join_matrices["disconnected"], join_matrices["convex"]
     centroids, depth_image, coplanarity, concave, num_surfaces = data["centroids"], data["depth"], data["coplanarity"], data["concave"], data["num_surfaces"]
 
     groups = []
@@ -152,9 +152,9 @@ def determine_convexly_connected_surfaces(candidates, data):
     return convex, concave, new_surfaces
 
 def determine_disconnected_join_candidates(relabeling, candidates, data):
-    candidates_all = candidates["occlusion"] + candidates["coplanar"] + candidates["curved"]
+    candidates_all = candidates["occlusion"] + candidates["occlusion_coplanar"] + candidates["curved"]
     candidates_all[candidates_all > 1] = 1
-    input = ps.determine_occlusion_line_points(candidates_all, data["patch_points"], data["centroids"], data["num_surfaces"])
+    input = ps.determine_occlusion_line_points(candidates_all, data["patch_points"], data["avg_pos"], data["num_surfaces"])
     if len(input[0]) == 0: return np.zeros((data["num_surfaces"], data["num_surfaces"])), data["surfaces"]
     closest_points = ps.calculate_nearest_points(*input)
     join_matrix, new_surfaces = ps.determine_occlusion(candidates_all, candidates, closest_points, relabeling, data)
@@ -167,30 +167,32 @@ def get_GPU_models():
 
 
 def assemble_surfaces(data, models):
+    plot_surfaces(data["surfaces"])
     color_similarity_model, angle_similarity_model, texture_model = models
 
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
     data["sim_color"] = color_similarity_model(data["hist_color"])
-    data["sim_angle"] = angle_similarity_model(data["hist_angles"])
+    data["sim_angle"] = angle_similarity_model(data["hist_angle"])
     data["sim_texture"] = ps.calculate_texture_similarities(data["hist_texture"], data["num_surfaces"])
 
     join_candidates = determine_join_candidates(data, parameters_candidates)
 
-    data["coplanarity"] = ps.determine_coplanarity(join_candidates["occlusion_coplanar"], data)
+    data["coplanarity"] = ps.determine_coplanarity(join_candidates["occlusion_coplanar"], data["centroids"].astype("float64"), data["avg_normals"], data["planes"], data["num_surfaces"])
+    join_candidates["occlusion_coplanar"] = join_candidates["occlusion_coplanar"]*data["coplanarity"]
 
     join_surfaces = {}
     join_surfaces["convex"], data["concave"], new_surfaces = determine_convexly_connected_surfaces(join_candidates["convexity"], data)
     _, relabeling = join_surfaces_according_to_join_matrix(join_surfaces["convex"], data["surfaces"].copy(), data["num_surfaces"])
     join_surfaces["disconnected"], new_surfaces = determine_disconnected_join_candidates(relabeling, join_candidates, data)
-    join_surfaces["final"] = remove_convex_connections_after_occlusion_reasoning(join_surfaces, data)
+    join_surfaces["final"] = remove_concave_connections_after_occlusion_reasoning(join_surfaces, data)
 
     surfaces, _ = join_surfaces_according_to_join_matrix(join_surfaces["final"], data["surfaces"], data["num_surfaces"])
     plot_surfaces(surfaces, False)
 
 def main():
     models = get_GPU_models()
-    for index in list(range(0, 111)):
+    for index in list(range(24, 111)):
         print(index)
         data = load_image_and_surface_information(index)
         assemble_surfaces(data, models)
