@@ -17,14 +17,14 @@ import numpy as np
 import tensorflow as tf
 import plot_image
 import core.utils as utils
+import standard_values
 from standard_values import *
-from tqdm import tqdm
 from core.dataset import Dataset
 from core.yolov3 import YOLOv3, decode, compute_loss
 from core.config import cfg
 from PIL import Image
 
-def train():
+def train(load_trained_weights=False):
     trainset = Dataset('train')
     logdir = "./data/log"
     steps_per_epoch = len(trainset)
@@ -42,7 +42,10 @@ def train():
         output_tensors.append(pred_tensor)
 
     model = tf.keras.Model(input_tensor, output_tensors)
-    utils.load_weights(model, "parameters/yolov3.weights")
+    if load_trained_weights:
+        model.load_weights("./parameters/YOLO_trained_weights/weights.ckpt")
+    else:
+        utils.load_weights(model, "parameters/yolov3.weights")
     optimizer = tf.keras.optimizers.Adam()
     if os.path.exists(logdir): shutil.rmtree(logdir)
     writer = tf.summary.create_file_writer(logdir)
@@ -88,36 +91,38 @@ def train():
             writer.flush()
 
     for epoch in range(cfg.TRAIN.EPOCHS):
+        trainset.shuffle()
         for image_data, target in trainset:
             train_step(image_data, target)
         model.save_weights("./parameters/YOLO_trained_weights/weights.ckpt")
 
-def create_training_annotation_file():
-    image_names = os.listdir("data/RGB")
+def create_annotation_files():
     annotation_file_string = ""
-    for name in tqdm(image_names):
-        annotation_string = f"data/RGB/{name} "
-        annotation = np.asarray(Image.open(f"data/annotation/{name}"))
-        num_objects = np.max(annotation)
-        mins = np.ones((num_objects, 2), dtype="int32") * np.inf
-        maxs = np.ones((num_objects, 2), dtype="int32") * -np.inf
-        for y in range(height):
-            for x in range(width):
-                if (i := annotation[y][x]) != 0:
-                    values = np.asarray([x, y], dtype="int32")
-                    mins[i-1] = np.minimum(mins[i-1], values)
-                    maxs[i-1] = np.maximum(maxs[i-1], values)
-        for i in range(num_objects):
-            try:
-                annotation_string = annotation_string + f"{int(mins[i][0])},{int(mins[i][1])},{int(maxs[i][0])},{int(maxs[i][1])},73 "
-            except:
-                pass
-        annotation_file_string = annotation_file_string + annotation_string + "\n"
-    with open("data/YOLO_training_annotation.txt", "w+") as file:
-        file.write(annotation_file_string)
+    for set_type in ["train", "test"]:
+        for index in standard_values.train_indices if set_type == "train" else standard_values.test_indices:
+            print(index)
+            annotation_string = f"data/RGB/{index}.png "
+            annotation = np.asarray(Image.open(f"data/annotation/{index}.png"))
+            num_objects = np.max(annotation)
+            mins = np.ones((num_objects, 2), dtype="int32") * np.inf
+            maxs = np.ones((num_objects, 2), dtype="int32") * -np.inf
+            for y in range(height):
+                for x in range(width):
+                    if (i := annotation[y][x]) != 0:
+                        values = np.asarray([x, y], dtype="int32")
+                        mins[i-1] = np.minimum(mins[i-1], values)
+                        maxs[i-1] = np.maximum(maxs[i-1], values)
+            for i in range(num_objects):
+                try:
+                    annotation_string = annotation_string + f"{int(mins[i][0])},{int(mins[i][1])},{int(maxs[i][0])},{int(maxs[i][1])},73 "
+                except:
+                    pass
+            annotation_file_string = annotation_file_string + annotation_string + "\n"
+        with open(f"data/YOLO_annotation_files/YOLO_annotation_{set_type}.txt", "w+") as file:
+            file.write(annotation_file_string)
 
-def visualize_dataset():
-    with open("data/YOLO_training_annotation.txt", "r") as annotation_file:
+def visualize_dataset(set_type="train"):
+    with open(f"data/YOLO_annotation_files/YOLO_annotation_{set_type}.txt", "r") as annotation_file:
         for line in annotation_file:
             parts = line.split(" ")
             del parts[-1]

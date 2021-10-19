@@ -1,12 +1,15 @@
 import time
+
+import find_planes
+import plot_image
 import process_surfaces as ps
 from standard_values import *
 from numba import njit
 from load_images import *
 from find_planes import plot_surfaces
-from image_processing_models_GPU import extract_texture_function, chi_squared_distances_model_1D, chi_squared_distances_model_2D
+from image_processing_models_GPU import extract_texture_function, chi_squared_distances_model_2D
 
-parameters_candidates = [(0.6, 0.5, 7, 2), (0.8, 1.0, 7), (0.8, 0.7, 1.15)]
+parameters_candidates = [(0.6, 0.5, 7, 2), (0.8, 1, 7), (0.8, 0.7, 1.15)]
 
 def prepare_border_centers(neighbors, border_centers):
     result = []
@@ -166,8 +169,7 @@ def get_GPU_models():
            extract_texture_function(), \
 
 
-def assemble_surfaces(data, models):
-    plot_surfaces(data["surfaces"])
+def assemble_surfaces(data, models, plot=False):
     color_similarity_model, angle_similarity_model, texture_model = models
 
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
@@ -188,11 +190,19 @@ def assemble_surfaces(data, models):
     join_surfaces["final"] = remove_concave_connections_after_occlusion_reasoning(join_surfaces, data)
 
     surfaces, _ = join_surfaces_according_to_join_matrix(join_surfaces["final"], data["surfaces"], data["num_surfaces"])
-    plot_surfaces(surfaces, False)
+    if plot:
+        plot_surfaces(surfaces, False)
+    data["final_surfaces"] = surfaces
+    return data
+
+def get_prediction_model():
+    surface_model = find_planes.get_find_surface_function()
+    assemble_surface_models = get_GPU_models()
+    return lambda x: assemble_surfaces(surface_model(x), assemble_surface_models, False)
 
 def main():
     models = get_GPU_models()
-    for index in list(range(24, 111)):
+    for index in list(range(0, 111)):
         print(index)
         data = load_image_and_surface_information(index)
         assemble_surfaces(data, models)

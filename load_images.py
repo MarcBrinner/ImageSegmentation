@@ -18,6 +18,7 @@ def load_image(index):
     annotation = Image.open(f"data/annotation/{file}")
     return np.asarray(depth_image), np.asarray(RGB_image), np.asarray(annotation)
 
+
 def load_image_and_surface_information(index):
     data = {}
     data["depth"], data["rgb"], data["annotation"] = load_image(index)
@@ -31,6 +32,3 @@ def load_image_and_surface_information(index):
     data["vectors"] = np.load(f"out/{index}/vectors.npy")
     data["num_surfaces"] = int(np.max(data["surfaces"]) + 1)
     return data
-
-if __name__ == '__main__':
-    load_image(0)

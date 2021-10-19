@@ -12,12 +12,9 @@
 #================================================================
 
 import os
-import time
 import shutil
 import numpy as np
 import tensorflow as tf
-import core.utils as utils
-from tqdm import tqdm
 from core.dataset import Dataset
 from core.yolov3 import YOLOv3, decode, compute_loss
 from core.config import cfg

@@ -6,6 +6,8 @@ import plot_image
 import shutil
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+
+import standard_values
 from standard_values import *
 from core.yolov3 import YOLOv3, decode, compute_loss
 from core import utils, dataset, config
@@ -41,7 +43,7 @@ def detect_objects(model, input_image):
 
     pred_bbox = [tf.reshape(x, (-1, tf.shape(x)[-1])) for x in pred_bbox]
     pred_bbox = tf.concat(pred_bbox, axis=0)
-    bboxes = utils.postprocess_boxes(pred_bbox, input_image_size, input_size, 0.365)
+    bboxes = utils.postprocess_boxes(pred_bbox, input_image_size, input_size, 0.5)
     bboxes = utils.nms(bboxes, 0.5, method='nms')
     return bboxes
 
@@ -58,7 +60,7 @@ def get_object_detector(weights=None):
 
 def main():
     detector = get_object_detector_model()
-    for i in range(111):
+    for i in standard_values.test_indices:
         _, rgb, _  = load_images.load_image(i)
         bboxes = detect_objects(detector, rgb)
         show_bounding_boxes(rgb, bboxes)

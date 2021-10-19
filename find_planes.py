@@ -11,12 +11,14 @@ from plot_image import *
 from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import PolynomialFeatures
 
 variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight", "dense_1", "dense_2"]
 similarity_normalizers = [6, 2, 1/50, 1/40]
 gauss_CRF_parameters = list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 10000.0, 1 / 100, 10000.0, 1 / 200, 1 / 100, 10000.0, 20.0, 0.01], (12, 1, 1)))
 LR_CRF_parameters = [0.01, 15000]
 standard_kernel_size = 7
+div_x, div_y = 4, 4
 
 @njit()
 def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
@@ -105,13 +107,19 @@ def train_LR_clf():
     train_Y = np.concatenate([np.zeros(int(len(inputs_0)*0.9)), np.ones(int(len(inputs_1)*0.9))], axis=0)
     test_Y = np.concatenate([np.zeros(len(inputs_0) - int(len(inputs_0)*0.9)), np.ones(len(inputs_1) - int(len(inputs_1)*0.9))], axis=0)
 
+    poly = PolynomialFeatures(degree=1, interaction_only=False, include_bias=False)
+    train_X_p = poly.fit_transform(train_X)
+    test_X_p = poly.fit_transform(test_X)
+    print(np.shape(train_X_p))
+    print(np.shape(test_X_p))
+
     clf = LogisticRegression(max_iter=1000, penalty="l2")
-    clf.fit(train_X, train_Y)
+    clf.fit(train_X_p, train_Y)
     print(clf.coef_)
     print(clf.intercept_)
-    print(np.sum(np.abs(clf.predict_proba(train_X)[:, 1]-train_Y))/len(train_Y))
-    print(np.sum(np.abs(clf.predict_proba(test_X)[:, 1]-test_Y))/len(test_Y))
-    clf.fit(np.concatenate([train_X, test_X], axis=0), np.concatenate([train_Y, test_Y], axis=0))
+    print(np.sum(np.abs(clf.predict_proba(train_X_p)[:, 1]-train_Y))/len(train_Y))
+    print(np.sum(np.abs(clf.predict_proba(test_X_p)[:, 1]-test_Y))/len(test_Y))
+    clf.fit(np.concatenate([train_X_p, test_X_p], axis=0), np.concatenate([train_Y, test_Y], axis=0))
     print(clf.coef_)
     print(clf.intercept_)
     pickle.dump(clf, open("parameters/pixel_similarity_clf/clf.pkl", "wb"))
@@ -383,8 +391,8 @@ def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width):
             index += 1
     return Q
 
-def find_surfaces(models, image_data, mode, sizes, kernel_size, plot_result=False):
-    div_x, div_y, size_x, size_y = sizes
+def find_surfaces(models, image_data, mode, kernel_size, plot_result=False, save_index=-1):
+    size_x, size_y = int(width / div_x), int(height / div_y)
     smoothing_model, surface_model, normals_and_log_depth, conv_crf_model = models
     grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
     grid = np.stack([grid[1], grid[0]], axis=-1)
@@ -422,39 +430,44 @@ def find_surfaces(models, image_data, mode, sizes, kernel_size, plot_result=Fals
 
     if plot_result:
         plot_surfaces(data["surfaces"])
+
+    if save_index >= 0:
+        os.makedirs(f"out/{save_index}", exist_ok=True)
+        np.save(f"out/{save_index}/Q.npy", data["surfaces"])
+        np.save(f"out/{save_index}/depth.npy", data["depth"])
+        np.save(f"out/{save_index}/angles.npy", data["angles"])
+        np.save(f"out/{save_index}/vectors.npy", data["vectors"])
+        np.save(f"out/{save_index}/patches.npy", data["patches"])
+        np.save(f"out/{save_index}/points.npy", data["points_3d"])
+        np.save(f"out/{save_index}/edges.npy", data["depth_edges"])
     return data
 
-def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_kernel_size, save_data=True, plot_result=False):
-    div_x, div_y = 4, 4
+def get_models(mode="LR", kernel_size=standard_kernel_size):
     size_x, size_y = int(width / div_x), int(height / div_y)
+    return gaussian_filter_with_depth_factor_model_GPU(), \
+           find_surfaces_model_GPU(), \
+           normals_and_log_depth_model_GPU(), \
+           conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x) if mode == "LR" else \
+           conv_crf_Gauss(*gauss_CRF_parameters, kernel_size, size_y, size_x)
 
-    smoothing_model = gaussian_filter_with_depth_factor_model_GPU()
-    normals_and_log_depth = normals_and_log_depth_model_GPU()
-    surface_model = find_surfaces_model_GPU()
-    if mode == "LR":
-        conv_crf_model = conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x)
-    else:
-        conv_crf_model = conv_crf_Gauss(*gauss_CRF_parameters, kernel_size, size_y, size_x)
-    models = [smoothing_model, surface_model, normals_and_log_depth, conv_crf_model]
 
+def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_kernel_size, save_data=True, plot_result=False, return_results=False):
+    models = get_models(mode, kernel_size)
+    results = []
     for index in image_indices:
-        print(index)
         image_data = load_image(index)
+        data = find_surfaces(models, image_data, mode, kernel_size, False, -1 if not save_data else index)
+        if return_results:
+            results.append(data)
+    if return_results:
+        return results
 
-        data = find_surfaces(models, image_data, mode, [div_x, div_y, size_x, size_y], kernel_size, plot_result)
-
-        if save_data:
-            os.makedirs(f"out/{index}", exist_ok=True)
-            np.save(f"out/{index}/Q.npy", data["surfaces"])
-            np.save(f"out/{index}/depth.npy", data["depth"])
-            np.save(f"out/{index}/angles.npy", data["angles"])
-            np.save(f"out/{index}/vectors.npy", data["vectors"])
-            np.save(f"out/{index}/patches.npy", data["patches"])
-            np.save(f"out/{index}/points.npy", data["points_3d"])
-            np.save(f"out/{index}/edges.npy", data["depth_edges"])
+def get_find_surface_function(mode="LR", kernel_size=standard_kernel_size):
+    models = get_models(mode, kernel_size)
+    return lambda x: find_surfaces(models, x, mode, kernel_size, False, -1)
 
 if __name__ == '__main__':
-    #train_LR_clf(False)
-    #quit()
+    train_LR_clf()
+    quit()
     find_surfaces_for_indices(list(range(109, 111)), mode="LR", plot_result=False, save_data=True)
     quit()

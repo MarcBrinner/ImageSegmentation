@@ -49,6 +49,9 @@ class Dataset(object):
         np.random.shuffle(annotations)
         return annotations
 
+    def shuffle(self):
+        np.random.shuffle(self.annotations)
+
     def __iter__(self):
         return self
 

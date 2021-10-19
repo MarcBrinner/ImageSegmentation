@@ -1,7 +1,10 @@
 import numba
 import warnings
 
+import numpy as np
+
 import plot_image
+import utils
 from standard_values import *
 from numba import njit
 from load_images import *
@@ -216,7 +219,7 @@ def determine_convexity_for_candidates(data, candidates, closest_points):
                     point = c_1 + m * direction
                     new_surfaces[int(point[1])][int(point[0])] = 70
 
-            elif v1 - v2 < -0.13 or (coplanarity[i][surface_2] == 0 and (above*1.6 < below or (abs(v1-v2) < 0.05 and abs(1-above/below) < 0.2))):
+            elif v1 - v2 < -0.16 or (coplanarity[i][surface_2] == 0 and (above*1.6 < below or (abs(v1-v2) < 0.05 and abs(1-above/below) < 0.2))):
                 concave[i][surface_2] = 1
                 concave[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -336,7 +339,8 @@ def calculate_depth_extend(surfaces, norm_image, points_3d, num_surfaces):
 
 def determine_occlusion(candidates_all, candidates, closest_points, relabeling, data):
     candidates_occlusion, candidates_curved = candidates["occlusion"], candidates["curved"]
-    surfaces, coplanarity, norm_image, depth_extend, num_surfaces = data["surfaces"], data["coplanarity"], data["norm"], data["depth_extend"], data["num_surfaces"]
+    surfaces, coplanarity, norm_image, depth_extend, num_surfaces, points_3d, neighbors = \
+        data["surfaces"], data["coplanarity"], data["norm"], data["depth_extend"], data["num_surfaces"], data["points_3d"], data["neighbors"]
     join_matrix = np.zeros((num_surfaces, num_surfaces))
     closest_points_array = np.zeros((num_surfaces, num_surfaces, 2), dtype="int32")
     new_surfaces = surfaces.copy()
@@ -355,9 +359,7 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
         index_1 += 1
 
     for i in range(num_surfaces):
-        i = 9
         for j in range(i+1, num_surfaces):
-            j = 20
             if candidates_all[i][j] == 0:
                 continue
             l_1 = relabeling[i]
@@ -401,25 +403,41 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
                 index += 1
             if zero_counter >= 45 or other_surface_counter >= 3:
                 other_index = True
+            if coplanarity[i][j] == 1 and zero_counter < 2 and other_surface_counter == 0 and j not in neighbors[i]:
+                continue
             if (not other_index and (candidates_curved[i][j] == 0) and coplanarity[i][j] == 0) or (not other_index and coplanarity[i][j] == 0 and zero_counter > 8):
                 continue
 
             d_1 = norm_image[pos_1[1]][pos_1[0]]
             d_2 = norm_image[pos_2[1]][pos_2[0]]
-            d_dif = d_2 - d_1
+
+            if d_1 > d_2:
+                pos_tmp = pos_1.copy()
+                pos_1 = pos_2.copy()
+                pos_2 = pos_tmp.copy()
+
+            point_1 = points_3d[pos_1[1]][pos_1[0]]
+            point_2 = points_3d[pos_2[1]][pos_2[0]]
+
+            line = utils.normed(point_2 - point_1)
 
             occluded = True
-
             if index_1 != index_2:
-                index_dif = 1 / (index_2 - index_1) * d_dif
-
                 for k in range(index_2 - index_1 - 1):
                     p = positions[index_1 + k + 1]
                     s = surfaces[p[1]][p[0]]
-                    if norm_image[p[1]][p[0]] > k * index_dif + d_1 + 1 and s not in [0, i, j]:
-                        occluded = False
-                        break
-
+                    if s in [0, i, j]:
+                        continue
+                    current_point = points_3d[p[1]][p[0]]
+                    proj = point_1 + line * np.dot(current_point - point_1, line)
+                    d = current_point - proj
+                    len_proj_dist = np.linalg.norm(d)
+                    cos_proj = np.dot(utils.normed(current_point), d/len_proj_dist)
+                    if cos_proj <= np.pi/2 and cos_proj >= 0:
+                        dist = len_proj_dist / cos_proj
+                        if dist > 1.3:
+                            occluded = False
+                            break
             if (coplanarity[i][j] == 0 and candidates_occlusion[i][j] == 0 and candidates_curved[i][j] == 1) and\
                     (abs(index_2 - index_1) > 8 or calc_depth_extend_distance(i, j, depth_extend) > 34):
                 occluded = False
@@ -431,7 +449,7 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
                 if occluded:
                     new_surfaces[pos2][pos1] = 100
                 else:
-                    new_surfaces[pos2][pos1] = 70
+                    new_surfaces[pos2][pos1] = 0
     return join_matrix, new_surfaces
 
 def determine_even_planes(data):
@@ -630,6 +648,8 @@ def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_
     data["centroids"], centroid_indices = determine_surface_patch_centroids(data)
     data["surfaces"] = remove_disconnected_components(data["surfaces"], np.asarray(centroid_indices, dtype="int64"))
     data["texture"] = texture_model(data["rgb"])
+    if "lab" not in data.keys():
+        data["lab"] = utils.rgb_to_Lab(data["rgb"])
     data["hist_color"], data["hist_angle"], data["hist_texture"], data["avg_normals"] = determine_histograms_and_average_normals(data["lab"], data["angles"],
                                                                                       data["texture"], data["surfaces"], data["patches"], data["num_surfaces"])
     data["avg_normals"] = utils.angles_to_normals(data["avg_normals"])

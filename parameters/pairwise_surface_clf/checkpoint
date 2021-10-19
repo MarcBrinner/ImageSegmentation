@@ -1,0 +1,2 @@
+model_checkpoint_path: "clf_Neural.ckpt"
+all_model_checkpoint_paths: "clf_Neural.ckpt"
