@@ -1,26 +1,31 @@
 import pickle
+import random
+
 import numpy as np
+
 import assemble_objects_rules
 import detect_objects
 import tensorflow as tf
 import load_images
+import plot_image
 import process_surfaces as ps
 import standard_values
 from image_processing_models_GPU import Variable2, extract_texture_function, chi_squared_distances_model_1D,\
                                         chi_squared_distances_model_2D, print_tensor, Variable
-from tensorflow.keras import layers, optimizers, Model, losses
+from find_planes import get_find_surface_function
+from tensorflow.keras import layers, optimizers, Model, losses, regularizers, initializers
 from standard_values import *
 
 #initial_guess_parameters = [1.1154784, 2, 2, 1, 1.1, 3, -1, 2, 1.0323303, 0.24122038]
 initial_guess_parameters = [1, 2, 2, 1, 1.1, 0.02]
 
 variable_names = ["w_1", "w_2", "w_3", "w_4", "w_5", "w_6", "w_7", "w_8", "w_9", "weight"]
+clf_types = ["LR", "Neural"]
 
 def create_CRF_training_set():
     models = get_GPU_models()
-    Q_list = []
+    bbox_overlap_list = []
     features_list = []
-    counts_list = []
     Y_list = []
     for index in standard_values.train_indices:
         print(index)
@@ -28,19 +33,40 @@ def create_CRF_training_set():
         calculate_pairwise_similarity_features_for_surfaces(data, models)
         similarity_matrix = create_similarity_feature_matrix(data)
 
-        Q_in = get_initial_probabilities(data)
         Y = get_Y_value(data)
+        bbox_overlap = data["bbox_overlap"][:, 1:]
 
-        Q_list.append(Q_in)
+        bbox_overlap_list.append(bbox_overlap)
         Y_list.append(Y)
         features_list.append(similarity_matrix)
-        counts_list.append(np.asarray([data["num_surfaces"]-1 + data["num_bboxes"], data["num_bboxes"]]))
 
     pickle.dump(features_list, open("data/train_object_assemble_CRF_dataset/features.pkl", "wb"))
     pickle.dump(Y_list, open("data/train_object_assemble_CRF_dataset/Y.pkl", "wb"))
-    pickle.dump(counts_list, open("data/train_object_assemble_CRF_dataset/counts.pkl", "wb"))
-    pickle.dump(Q_list, open("data/train_object_assemble_CRF_dataset/Q.pkl", "wb"))
+    pickle.dump(bbox_overlap_list, open("data/train_object_assemble_CRF_dataset/bbox.pkl", "wb"))
 
+def LR_model(num_features=standard_values.num_pairwise_features):
+    input = layers.Input(shape=(None, None, num_features))
+    out = tf.squeeze(layers.Dense(1, activation="sigmoid", kernel_regularizer=regularizers.l2(0.0001),  name="dense")(input), axis=-1)
+    model = Model(input, out)
+    return model
+
+def neural_model(num_features = standard_values.num_pairwise_features):
+    input = layers.Input(shape=(None, None, num_features))
+    d_1 = layers.Dropout(0)(layers.Dense(50, kernel_regularizer=regularizers.l2(0.0001), activation="relu", name="dense_1")(input))
+    d_2 = layers.Dropout(0)(layers.Dense(50, kernel_regularizer=regularizers.l2(0.0001), activation="relu", name="dense_2")(d_1))
+    out = tf.squeeze(layers.Dense(1, activation="sigmoid", kernel_regularizer=regularizers.l2(0.0001), name="dense_3")(d_2), axis=-1)
+    model = Model(input, out)
+    return model
+
+def get_pairwise_model(clf_type):
+    if clf_type not in clf_types:
+        print("Clf type not recognized.")
+        quit()
+    if clf_type == "LR":
+        return LR_model()
+    elif clf_type == "Neural":
+        return neural_model()
+    return None
 
 def print_parameters(model, variable_names):
     for name in variable_names:
@@ -79,11 +105,13 @@ def get_Y_value(data):
     Y = np.pad(np.stack([Y_1, Y_2], axis=0), ((0, 0), (0, num_boxes), (0, num_boxes)))
     return np.asarray([Y[:, 1:, 1:]])
 
-def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight):
+def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, matrix_1, matrix_2):
     Q_mult = tf.tile(tf.expand_dims(Q, axis=1), [1, num_labels, 1, 1])
     messages = tf.reduce_sum(tf.multiply(tf.multiply(tf.expand_dims(pairwise_potentials, axis=-1), Q_mult), matrix_1), axis=2)
     compatibility = tf.reduce_sum(tf.multiply(tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, num_labels, 1]), matrix_2), axis=-1)
-    new_Q = tf.exp(tf.multiply(unary_potentials, 0.5) - tf.multiply(compatibility, 0.2))
+    compatibility = compatibility - tf.reduce_min(compatibility, axis=-1, keepdims=True)
+    compatibility = tf.math.divide_no_nan(compatibility, tf.reduce_max(compatibility)) * 15
+    new_Q = tf.exp(tf.multiply(unary_potentials, 0.5) - compatibility)
     new_Q = tf.math.divide_no_nan(new_Q, tf.reduce_sum(new_Q, axis=-1, keepdims=True))
     return new_Q
 
@@ -111,74 +139,157 @@ def mean_field_CRF(box_weight_1, boxes_weight_2, box_bias, weight, LR_weights, L
     output = Q
 
     model = Model(inputs=[Q_in, features, boxes_in, counts], outputs=output)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=True)
+    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=3e-3), metrics=[], run_eagerly=True)
     return model
 
-def mean_field_CRF_test(feature_weight, LR_bias, weight, num_iterations=1):
-    Q_in = layers.Input(shape=(None, None), name="Q")
-    features = layers.Input(shape=(None, None, None), name="features")
-    counts = layers.Input(shape=(2,), dtype=tf.int32, name="counts")
+def mean_field_CRF_test(feature_processing_model, num_iterations=60, num_features=standard_values.num_pairwise_features):
+    features = layers.Input(shape=(None, None, num_features), name="features")
+    boxes = layers.Input(shape=(None, None), name="boxes")
 
-    linear_LR = tf.reduce_sum(layers.Multiply()([Variable2(feature_weight, name="feature_weight")(features), features]), axis=-1)
-    features_LR = tf.sigmoid(layers.Add()([Variable2(LR_bias, name="LR_bias")(linear_LR), linear_LR])) - 0.5
+    num_surfaces = tf.shape(boxes)[2]
+    num_boxes = tf.shape(boxes)[1]
+    num_labels = num_surfaces + num_boxes
 
-    num_labels = counts[0, 0]
-    num_boxes = counts[0, 1]
+    boxes_dense = tf.squeeze(layers.Dense(1, kernel_initializer=initializers.constant(1), bias_initializer=initializers.constant(-0.2))(tf.expand_dims(boxes, axis=-1)), axis=-1)
+    boxes_pad = tf.pad(boxes_dense, [[0, 0], [num_surfaces, 0], [0, num_boxes]])
 
-    pairwise_potentials = tf.pad(features_LR, [[0, 0], [0, num_boxes], [0, num_boxes]])
+    pairwise_potentials_pred = feature_processing_model(features)
+    initial_Q = pairwise_potentials_pred * (1 - tf.eye(num_surfaces)) + tf.eye(num_surfaces)
+    initial_Q = tf.math.divide_no_nan(initial_Q, tf.reduce_sum(initial_Q, axis=-1, keepdims=True))
+    initial_Q = tf.pad(initial_Q, [[0, 0], [0, num_boxes], [0, num_boxes]])
+
+    pairwise_potentials = pairwise_potentials_pred - 0.5
+    pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
+    pairwise_potentials_pred = tf.pad(pairwise_potentials_pred, [[0, 0], [0, num_boxes], [0, num_boxes]])
+    pairwise_potentials_pred = pairwise_potentials_pred + boxes_pad
 
     matrix_1 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=-1)
-    matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels) *
-                                                                                                tf.cast(num_labels-num_boxes+ 1, dtype=tf.float32) *
-                                                                                                tf.squeeze(Variable(np.asarray([[1]]), name="weight_1")(features_LR), axis=1), axis=0), axis=0)
+    matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=0)
 
-    weight = Variable2(weight, name="weight_2")(Q_in)
-    Q = Q_in
+    Q = initial_Q
+    Q_acc = tf.stack([pairwise_potentials_pred, Q], axis=1)
     for _ in range(num_iterations):
-        Q = mean_field_iteration(Q_in, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight)
+        Q = 0.9 * Q + 0.1 * mean_field_iteration(initial_Q, pairwise_potentials, Q, num_labels, matrix_1, matrix_2)
+        Q_acc = tf.concat([Q_acc, tf.expand_dims(Q, axis=1)], axis=1)
 
-    model = Model(inputs=[Q_in, features, counts], outputs=Q)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=3e-2), metrics=[], run_eagerly=True)
+    model = Model(inputs=[features, boxes], outputs=Q_acc)
+    model.compile(loss=custom_loss_new_last, optimizer=optimizers.Adam(learning_rate=3e-2), metrics=[], run_eagerly=True)
 
     return model
 
-def custom_loss(y_actual, y_predicted):
-    join_matrix = tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1)
-    not_join_matrix = tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1)
-    num_outputs = tf.cast(tf.shape(y_predicted)[1], dtype=tf.float32)
+def cross_entropy(x, y, axis=-1):
+  safe_y = tf.where(tf.equal(x, 0), tf.ones_like(y), y)
+  return -tf.reduce_sum(x * tf.math.log(safe_y), axis)
 
-    num_labels = tf.shape(y_predicted)[2]
+def entropy(x, axis=-1):
+  return cross_entropy(x, x, axis)
 
-    prediction_expanded_1 = tf.tile(tf.expand_dims(y_predicted, axis=2), [1, 1, num_labels, 1, 1])
-    prediction_expanded_2 = tf.tile(tf.expand_dims(y_predicted, axis=3), [1, 1, 1, num_labels, 1])
+def KL_divergence(Q, M):
+    return cross_entropy(Q, tf.math.divide_no_nan(Q, M))
+
+def custom_loss_new_last(y_actual, y_predicted):
+    pred_pot = y_predicted[:, 0, :, :]
+    pred_Q = y_predicted[:, 25, :, :]
+    join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1))
+    not_join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1))
+    #num_outputs = tf.cast(tf.shape(pred_Q)[1], dtype=tf.float32)
+    #weights = tf.range(num_outputs, dtype=tf.float32)/num_outputs
+    #sum_weights = tf.reduce_sum(weights, axis=-1)
+    num_labels = tf.shape(pred_Q)[2]
+
+    LR_labels = tf.ones_like(pred_pot) * (1-not_join_matrix)
+    LR_weights = 1- (tf.ones_like(pred_pot) * (1- (join_matrix + not_join_matrix)))
+
+    LR_loss = losses.BinaryCrossentropy(from_logits=False)(tf.expand_dims(LR_labels, axis=-1), tf.expand_dims(pred_pot, axis=-1), LR_weights)
+
+    prediction_expanded_1 = tf.tile(tf.expand_dims(pred_Q, axis=1), [1, num_labels, 1, 1])
+    prediction_expanded_2 = tf.tile(tf.expand_dims(pred_Q, axis=2), [1, 1, num_labels, 1])
     mult_out = tf.multiply(prediction_expanded_1, prediction_expanded_2)
     sum_out = tf.reduce_sum(mult_out, axis=-1)
 
-    positive_error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(layers.ELU(alpha=0.1)(0.4 - tf.multiply(join_matrix, sum_out)), axis=-1),axis=-1), axis=-1)
-    negative_error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.multiply(layers.ELU(alpha=0.1)(not_join_matrix - 0.05), sum_out), axis=-1),axis=-1), axis=-1)
+    label_0_diff = 1 - sum_out
+    label_0_loss = tf.math.log(tf.where(tf.equal(label_0_diff, 0), tf.ones_like(label_0_diff), label_0_diff))
 
-    num_joins = tf.reduce_sum(tf.reduce_sum(join_matrix, axis=-1), axis=-1) * num_outputs
-    num_not_joins = tf.reduce_sum(tf.reduce_sum(not_join_matrix, axis=-1), axis=-1) * num_outputs
+    label_1_loss = tf.math.log(tf.where(tf.equal(sum_out, 0), tf.ones_like(sum_out), sum_out))
 
-    error = tf.math.divide_no_nan(positive_error, num_joins)\
-            + tf.math.divide_no_nan(negative_error, num_not_joins)
-    return error
 
-def get_initial_probabilities(data):
-    num_labels, bbox_overlap = data["num_surfaces"]-1, data["bbox_overlap"]
-    num_boxes = np.shape(bbox_overlap)[0]
-    potentials_surfaces = np.eye(num_labels, num_labels + num_boxes)
-    potentials_surfaces = potentials_surfaces + np.random.uniform(size=np.shape(potentials_surfaces)) * 0.02
-    potentials_surfaces = potentials_surfaces / np.sum(potentials_surfaces, axis=-1, keepdims=True)
+    positive_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(join_matrix, label_1_loss), axis=-1), axis=-1)
+    negative_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(not_join_matrix, label_0_loss), axis=-1),axis=-1)
 
-    potentials_boxes = bbox_overlap[:, 1:].copy()
-    potentials_boxes = potentials_boxes + np.random.uniform(size=np.shape(potentials_boxes)) * 0.02
-    potentials_boxes = potentials_boxes / np.sum(potentials_boxes, axis=-1, keepdims=True)
-    potentials_boxes[np.isnan(potentials_boxes)] = 0
-    potentials_boxes = np.pad(potentials_boxes, ((0, 0), (0, num_boxes)))
+    num_joins = tf.reduce_sum(tf.reduce_sum(join_matrix, axis=-1), axis=-1)
+    num_not_joins = tf.reduce_sum(tf.reduce_sum(not_join_matrix, axis=-1), axis=-1)
 
-    potentials = np.concatenate([potentials_surfaces, potentials_boxes], axis=0)
-    return potentials
+    Q_loss = (tf.math.divide_no_nan(positive_error, 1)
+            + tf.math.divide_no_nan(negative_error, 1))
+    return LR_loss
+
+def custom_loss_new(y_actual, y_predicted):
+    pred_pot = y_predicted[:, 0, :, :]
+    pred_Q = y_predicted[:, 1:, :, :]
+    join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1))
+    not_join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1))
+    num_outputs = tf.cast(tf.shape(pred_Q)[1], dtype=tf.float32)
+    weights = tf.range(num_outputs, dtype=tf.float32)/num_outputs
+    sum_weights = tf.reduce_sum(weights, axis=-1)
+    num_labels = tf.shape(pred_Q)[2]
+
+    LR_labels = tf.ones_like(pred_pot) * (1-not_join_matrix)
+    LR_weights = 1- (tf.ones_like(pred_pot) * (1- (join_matrix + not_join_matrix)))
+
+    LR_loss = losses.BinaryCrossentropy(from_logits=False)(tf.expand_dims(LR_labels, axis=-1), tf.expand_dims(pred_pot, axis=-1), LR_weights)
+
+    prediction_expanded_1 = tf.tile(tf.expand_dims(pred_Q, axis=2), [1, 1, num_labels, 1, 1])
+    prediction_expanded_2 = tf.tile(tf.expand_dims(pred_Q, axis=3), [1, 1, 1, num_labels, 1])
+    mult_out = tf.multiply(prediction_expanded_1, prediction_expanded_2)
+    sum_out = tf.reduce_sum(mult_out, axis=-1)
+
+    label_1_diff = 1 - sum_out
+    label_1_diff_safe = tf.where(tf.equal(label_1_diff, 0), tf.ones_like(label_1_diff), label_1_diff)
+    loss_label_1 = tf.math.multiply_no_nan(tf.math.log(label_1_diff_safe), label_1_diff)
+
+    label_0_diff_safe = tf.where(tf.equal(sum_out, 0), tf.ones_like(sum_out), sum_out)
+    loss_label_0 = tf.math.multiply_no_nan(tf.math.log(label_0_diff_safe), sum_out)
+
+
+    positive_error = -tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.multiply(join_matrix, loss_label_1), axis=-1), axis=-1)*weights, axis=-1)
+    negative_error = -tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.multiply(not_join_matrix, loss_label_0), axis=-1),axis=-1)*weights, axis=-1)
+
+    num_joins = tf.reduce_sum(tf.reduce_sum(join_matrix, axis=-1), axis=-1)
+    num_not_joins = tf.reduce_sum(tf.reduce_sum(not_join_matrix, axis=-1), axis=-1)
+
+    Q_loss = (tf.math.divide_no_nan(positive_error, num_joins * sum_weights)
+            + tf.math.divide_no_nan(negative_error, num_not_joins * sum_weights)) * 10
+    return Q_loss# + LR_loss*5
+
+def custom_loss(y_actual, y_predicted):
+    pred_pot = y_predicted[:, 0, :, :]
+    pred_Q = y_predicted[:, 1:, :, :]
+    join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1))
+    not_join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1))
+    num_outputs = tf.cast(tf.shape(pred_Q)[1], dtype=tf.float32)
+    weights = tf.range(num_outputs, dtype=tf.float32)/num_outputs
+    sum_weights = tf.reduce_sum(weights, axis=-1)
+    num_labels = tf.shape(pred_Q)[2]
+
+    LR_labels = tf.ones_like(pred_pot) * (1-not_join_matrix)
+    LR_weights = 1- (tf.ones_like(pred_pot) * (1- (join_matrix + not_join_matrix)))
+
+    LR_loss = losses.BinaryCrossentropy(from_logits=False)(tf.expand_dims(LR_labels, axis=-1), tf.expand_dims(pred_pot, axis=-1), LR_weights)
+
+    prediction_expanded_1 = tf.tile(tf.expand_dims(pred_Q, axis=2), [1, 1, num_labels, 1, 1])
+    prediction_expanded_2 = tf.tile(tf.expand_dims(pred_Q, axis=3), [1, 1, 1, num_labels, 1])
+    mult_out = tf.multiply(prediction_expanded_1, prediction_expanded_2)
+    sum_out = tf.reduce_sum(mult_out, axis=-1)
+
+    positive_error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(tf.multiply(join_matrix, 1 - sum_out)), axis=-1), axis=-1)*weights, axis=-1)
+    negative_error = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(tf.square(tf.multiply(not_join_matrix, sum_out)), axis=-1),axis=-1)*weights, axis=-1)
+
+    num_joins = tf.reduce_sum(tf.reduce_sum(join_matrix, axis=-1), axis=-1)
+    num_not_joins = tf.reduce_sum(tf.reduce_sum(not_join_matrix, axis=-1), axis=-1)
+
+    Q_loss = (tf.math.divide_no_nan(positive_error, num_joins * sum_weights)
+            + tf.math.divide_no_nan(negative_error, num_not_joins * sum_weights)*10)
+    return Q_loss + LR_loss*5
 
 def get_position_and_occlusion_infos(data):
     avg_positions, patch_points, surfaces, norm_image, num_surfaces = data["avg_pos"], data["patch_points"], data["surfaces"], data["norm"], data["num_surfaces"]
@@ -188,7 +299,7 @@ def get_position_and_occlusion_infos(data):
     return join_matrix, close_matrix, closest_points
 
 def calculate_pairwise_similarity_features_for_surfaces(data, models):
-    color_similarity_model, angle_similarity_model, texture_model, object_detector, _ = models
+    color_similarity_model, angle_similarity_model, texture_model, object_detector = models[:4]
 
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
@@ -206,7 +317,7 @@ def calculate_pairwise_similarity_features_for_surfaces(data, models):
     data["bboxes"] = object_detector(data["rgb"])
     data["bbox_overlap"] = ps.calc_box_and_surface_overlap(data)
     data["bbox_crf_matrix"] = ps.create_bbox_CRF_matrix(data["bbox_overlap"])
-    data["bbox_similarity_matrix"] = ps.create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"])
+    data["bbox_similarity_matrix"] = ps.create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"], data["bboxes"])
     data["num_bboxes"] = np.shape(data["bbox_overlap"])[0]
     #detect_objects.show_bounding_boxes(rgb_image, bboxes)
     #plot_surfaces(surfaces)
@@ -222,35 +333,60 @@ def create_similarity_feature_matrix(data):
     matrix = np.stack([data[key][1:,1:] for key in keys], axis=-1)
     return matrix
 
-def plot_prediction(prediction, surfaces):
+def create_surfaces_from_crf_output(prediction, surfaces):
+    # num_labels = np.shape(prediction)[-1]
+    # t_1 = np.tile(np.expand_dims(prediction, axis=0), [num_labels, 1, 1])
+    # t_2 = np.tile(np.expand_dims(prediction, axis=1), [1, num_labels, 1])
+    # m = np.multiply(t_1, t_2)
+    # s = np.sum(m, axis=-1)
+    # join_matrix = np.zeros_like(s)
+    # join_matrix[s > 0.5] = 1
+    # new_surfaces, _ = assemble_objects_rules.join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_labels+1)
     max_vals = np.argmax(prediction, axis=-1)
+    new_surfaces = surfaces.copy()
     for i in range(len(max_vals)):
         if max_vals[i] != i:
-            surfaces[surfaces == i+1] = max_vals[i]+1
-    assemble_objects_rules.plot_surfaces(surfaces)
+            new_surfaces[new_surfaces == i+1] = max_vals[i]+1
+    return new_surfaces
 
-def train_CRF():
+def train_CRF(clf_type="Neural"):
     features = pickle.load(open("data/train_object_assemble_CRF_dataset/features.pkl", "rb"))
     Y = pickle.load(open("data/train_object_assemble_CRF_dataset/Y.pkl", "rb"))
-    counts = pickle.load(open("data/train_object_assemble_CRF_dataset/counts.pkl", "rb"))
-    Q = pickle.load(open("data/train_object_assemble_CRF_dataset/Q.pkl", "rb"))
+    boxes = pickle.load(open("data/train_object_assemble_CRF_dataset/bbox.pkl", "rb"))
 
+    # for i in range(len(train_indices)):
+    #     y = Y[i]
+    #     y[0, 0, :, :] = y[0, 0, :, :] + np.transpose(y[0, 0, :, :])
+    #     y[0, 1, :, :] = y[0, 1, :, :] + np.transpose(y[0, 1, :, :])
+    #     Y[i] = y
     def gen():
-        for i in range(len(standard_values.train_indices)):
-            yield {"Q": Q[i], "features": features[i], "counts": counts[i]}, tf.squeeze(Y[i], axis=0)
+        n = len(train_indices)
+        #indices = list(range(n))
+        indices = list(range(n))# + list(range(n-15, n)) + list(range(n-7, n))
+        random.shuffle(indices)
+        for i in indices:
+            yield {"features": features[i], "boxes": boxes[i]}, tf.squeeze(Y[i], axis=0)
 
-    dataset = tf.data.Dataset.from_generator(gen, output_types=({"Q": tf.float32, "features": tf.float32, "counts": tf.int32}, tf.float32))
-    #p = assemble_objects_pairwise_clf.load_clf("LR")
-    # CRF = mean_field_CRF_test(np.reshape(p.coef_, (1, 12)), np.asarray([[p.intercept_]]), np.asarray([[0.1]]), 1)
+    dataset = tf.data.Dataset.from_generator(gen, output_types=({"features": tf.float32, "boxes": tf.float32}, tf.float32))
+
+    pw_clf = get_pairwise_model(clf_type)
+    #lr_clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_LR.pkl", "rb"))
+    #pw_clf.get_layer("dense").set_weights([lr_clf.coef_.reshape(14, 1), lr_clf.intercept_])
+    #print(lr_clf.coef_.reshape(14, 1), lr_clf.intercept_)
+    #nn = assemble_objects_pairwise_clf.get_nn_clf()
+    #pw_clf.load_weights("parameters/pairwise_surface_clf/clf_Neural.ckpt")
+    #for name in ["dense_1", "dense_2", "dense_3"]:
+    #    pw_clf.get_layer(name).set_weights(nn.get_layer(name).get_weights())
+    CRF = mean_field_CRF_test(pw_clf)
+    #CRF.load_weights("test.ckpt")
+    CRF.fit(dataset.batch(1), verbose=1, epochs=15)
+    print(CRF.trainable_weights)
+
+    # CRF = mean_field_CRF_test(LR_model())
     # print(CRF.evaluate(dataset.batch(1), verbose=1))
     #
-    # CRF = mean_field_CRF_test(np.ones((1, 12)), np.asarray([[0]]), np.asarray([[0.1]]), 1)
-    # print(CRF.evaluate(dataset.batch(1), verbose=1))
-    #print_parameters(CRF, ["feature_weight", "LR_bias", "weight_1", "weight_2"])
-    CRF = mean_field_CRF_test(np.ones((1, 12)), np.asarray([[0]]), np.asarray([[0.1]]), 3)
-    CRF.fit(dataset.batch(1), verbose=1, epochs=20)
-    print_parameters(CRF, ["feature_weight", "LR_bias", "weight_1", "weight_2"])
-
+    CRF.save_weights(f"data/CRF_pairwise_clf/{clf_type}.ckpt")
+    # print(CRF.trainable_weights)
     quit()
     for x, y in dataset:
         h = CRF.predict([np.asarray([k]) for k in x.values()], batch_size=1)
@@ -258,52 +394,55 @@ def train_CRF():
         quit()
     quit()
 
-def assemble_objects_CRF(data, models, train=False):
+def assemble_objects_crf(crf, models, data):
     calculate_pairwise_similarity_features_for_surfaces(data, models)
     similarity_matrix = create_similarity_feature_matrix(data)
 
-    CRF_model = models[-1]
+    inputs = [np.asarray([x]) for x in [similarity_matrix, data["bbox_overlap"][:, 1:]]]
 
-    Q_in = get_initial_probabilities(data)
-    unary_in = Q_in.copy()
-    unary_in[data["num_surfaces"]-1:] = -1000
+    pw_clf_2 = LR_model()
+    lr_clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_LR.pkl", "rb"))
+    pw_clf_2.get_layer("dense").set_weights([lr_clf.coef_.reshape(14, 1), lr_clf.intercept_])
+    crf_2 = mean_field_CRF_test(pw_clf_2)
 
-    input = [np.asarray([e]) for e in [Q_in, data["convexity"], data["sim_color"], data["sim_texture"],
-                                       data["coplanarity"], data["bbox_crf_matrix"], data["neighborhood_mat"]]]
-
-    if not train:
-        prediction = CRF_model.predict(input)
-        plot_prediction(prediction, data["surfaces"])
-    else:
-        Y = get_Y_value(data)
-        #s, l = assemble_objects.join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_labels+1)
-        #assemble_objects.plot_surfaces(s)
-        CRF_model.fit(input, Y, epochs=700)
-        print_parameters(CRF_model)
-        prediction = CRF_model.predict(input)
-        plot_prediction(prediction, data["surfaces"])
+    prediction = crf.predict(inputs)
+    prediction2 = crf_2.predict(inputs)
+    data["final_surfaces"] = create_surfaces_from_crf_output(prediction[0, -1], data["surfaces"])
+    return data
 
 def get_GPU_models():
     return chi_squared_distances_model_2D((10, 10), (4, 4)), \
            chi_squared_distances_model_2D((4, 4), (1, 1)), \
            extract_texture_function(), \
            detect_objects.get_object_detector(), \
-           mean_field_CRF(*initial_guess_parameters)
+           mean_field_CRF_test(LR_model(14), 60)
 
-def main():
+def get_prediction_model(clf_type="LR"):
+    surface_model = get_find_surface_function()
+    assemble_surface_models = get_GPU_models()
+    pw_clf = get_pairwise_model(clf_type)
+
+    crf = mean_field_CRF_test(pw_clf)
+    crf.load_weights(f"data/CRF_pairwise_clf/{clf_type}.ckpt")
+    print(crf.get_layer("boxes_sub").weights)
+    return lambda x, y: assemble_objects_crf(crf, assemble_surface_models, load_images.load_image_and_surface_information(y))
+
+def predict_indices(indices=standard_values.test_indices, clf_type="LR"):
     models = get_GPU_models()
-    train = True
-    index = 4
-    while True:
+
+    pw_clf = get_pairwise_model(clf_type)
+
+    #lr_clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_LR.pkl", "rb"))
+    #pw_clf.get_layer("dense").set_weights([lr_clf.coef_.reshape(14, 1), lr_clf.intercept_])
+
+    crf = mean_field_CRF_test(pw_clf)
+    crf.load_weights(f"data/CRF_pairwise_clf/{clf_type}.ckpt")
+    for index in indices:
         print(index)
         data = load_images.load_image_and_surface_information(index)
-        assemble_objects_CRF(data, models, train)
-        train = False
-        index += 1
+        data = assemble_objects_crf(crf, models, data)
+        plot_image.plot_surfaces(data["surfaces"])
+        plot_image.plot_surfaces(data["final_surfaces"])
 
 if __name__ == '__main__':
-    create_CRF_training_set()
-    quit()
-    train_CRF()
-    quit()
-    main()
+    train_CRF("Neural")

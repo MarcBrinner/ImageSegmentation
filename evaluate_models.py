@@ -1,11 +1,15 @@
 import pickle
 import numpy as np
+
+import assemble_objects_CRF
+import assemble_objects_pairwise_clf
 import assemble_objects_rules
 import plot_image
 import matplotlib.pyplot as plt
 from standard_values import *
 from load_images import load_image
 from numba import njit
+from tqdm import tqdm
 
 IoU_thresholds = [0.5, 0.75, 0.9]
 min_annotation_overlap_threshold = 0.2
@@ -33,8 +37,8 @@ def extract_IoU_information(annotation, detected_objects):
     count_matrix_detections = count_matrix_detections[1:]
     count_matrix_annotations = count_matrix_annotations[1:]
 
-    counts_detections_tiled = np.repeat(count_matrix_detections, num_annotations).reshape((num_detections, -1))
-    counts_annotations_tiled = np.repeat(count_matrix_annotations, num_detections).reshape((num_detections, -1))
+    counts_detections_tiled = np.repeat(count_matrix_detections, num_annotations).reshape((num_detections, num_annotations))
+    counts_annotations_tiled = np.transpose(np.repeat(count_matrix_annotations, num_detections).reshape((num_annotations, num_detections)))
 
     IoU = overlap_matrix / (counts_annotations_tiled + counts_detections_tiled - overlap_matrix)
     IoU_max_annotations = np.zeros(num_annotations)
@@ -57,49 +61,30 @@ def extract_IoU_information(annotation, detected_objects):
 
 def evaluate_Avg_max_IoU(evaluation_inputs): # Alias Jaccard Index
     IoU_sum = 0
-    counter = 0
     for annotation, detected_objects in evaluation_inputs:
-        num_valid_annotations, num_valid_detections, IoU_values = extract_IoU_information(annotation, detected_objects)
-        IoU_sum += sum(IoU_values)
-        counter += len(IoU_values)
-    return IoU_sum/counter
+        num_valid_annotations, num_valid_detections, IoU_values = extract_IoU_information(annotation.astype("int64"), detected_objects)
+        avg_max_IoU_sample = sum(IoU_values) / len(IoU_values)
+        print(avg_max_IoU_sample)
+        IoU_sum += avg_max_IoU_sample
+    return IoU_sum/len(evaluation_inputs)
 
-def evaluate_AP(evaluation_inputs):
-    all_IoU_values = []
-    num_all_valid_annotations = 0
-    num_all_valid_detections = 0
+def evaluate_model(model_type="Rules", model_args={}):
+    if model_type == "Rules":
+        model = assemble_objects_rules.get_prediction_model()
+    elif model_type == "Pairs" or model_type == "Pairs CRF":
+        model_args["model_type"] = model_type
+        model = assemble_objects_pairwise_clf.get_prediction_model(**model_args)
+    elif model_type == "CRF":
+        model = assemble_objects_CRF.get_prediction_model(**model_args)
 
-    for annotation, detected_objects in evaluation_inputs:
-        num_valid_annotations, num_valid_detections, IoU_values = extract_IoU_information(annotation, detected_objects)
-        num_all_valid_detections += num_valid_detections
-        num_all_valid_annotations += num_valid_annotations
-        all_IoU_values.extend(IoU_values)
+    evaluation_inputs = []
+    for index in tqdm(test_indices):
+        image_data = load_image(index)
+        prediction = model(image_data, index)
+        evaluation_inputs.append((image_data[2], prediction["final_surfaces"]))
 
-    for threshold in IoU_thresholds:
-        points = []
-
-        IoU_values_list = sorted([threshold] + [v for v in all_IoU_values if v > threshold])
-        IoU_values_array = np.array(IoU_values_list)
-        for value in IoU_values_list:
-            IoU_over_value = IoU_values_array > value
-
-            tp = np.sum(IoU_over_value)
-
-            precision = tp / num_all_valid_detections
-            recall = tp / num_all_valid_annotations
-            points.append((precision, recall))
-        a = np.asarray(points)
-        plt.plot(a[:, 0], a[:, 1])
-        plt.show()
-
-def evaluate_model(model_type="Rules", eval_type="AP"):
-    try:
-        evaluation_inputs = load_evaluation_inputs(model_type)
-    except:
-        evaluation_inputs = save_evaluation_inputs(model_type)
-
-    if eval_type == "AP":
-        evaluate_AP(evaluation_inputs)
+    score = evaluate_Avg_max_IoU(evaluation_inputs)
+    print(score)
 
 def save_evaluation_inputs(model_type="Rules"):
     if model_type not in model_types:
@@ -126,4 +111,4 @@ def load_evaluation_inputs(model_type="Rules"):
     return inputs
 
 if __name__ == '__main__':
-    evaluate_model()
+    evaluate_model(model_type="CRF", model_args={"clf_type": "Neural"})

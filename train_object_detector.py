@@ -136,4 +136,4 @@ def visualize_dataset(set_type="train"):
             plot_image.plot_array_PLT(image)
 
 if __name__ == '__main__':
-    train()
+    pass

@@ -510,9 +510,10 @@ def calc_box_and_surface_overlap(data):
     overlap_counter = overlap_counter / np.expand_dims(counts, axis=0)
     return overlap_counter
 
-def create_bbox_similarity_matrix_from_box_surface_overlap(bbox_overlap_matrix):
+def create_bbox_similarity_matrix_from_box_surface_overlap(bbox_overlap_matrix, bbox_data):
+    confidence_scores = np.array([x[4] for x in bbox_data])
     num_boxes, num_labels = np.shape(bbox_overlap_matrix)
-    t = np.transpose(bbox_overlap_matrix)
+    t = np.transpose(bbox_overlap_matrix * np.expand_dims(np.sqrt(confidence_scores), axis=-1))
     ext_1 = np.tile(np.expand_dims(t, axis=0), [num_labels, 1, 1])
     ext_2 = np.tile(np.expand_dims(t, axis=1), [1, num_labels, 1])
     similarity = np.sum(ext_1 * ext_2, axis=-1)
