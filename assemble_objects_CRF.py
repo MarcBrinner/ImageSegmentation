@@ -115,33 +115,6 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
     new_Q = tf.math.divide_no_nan(new_Q, tf.reduce_sum(new_Q, axis=-1, keepdims=True))
     return new_Q
 
-def mean_field_CRF(box_weight_1, boxes_weight_2, box_bias, weight, LR_weights, LR_bias, num_iterations=10):
-    Q_in = layers.Input(shape=(None, None))
-    counts = layers.Input(shape=(2,), dtype=tf.int32)
-    features = layers.Input(shape=(None, None, None))
-    boxes_in = layers.Input(shape=(None, None))
-    boxes_sim = (tf.sigmoid(layers.Add()([Variable2(box_bias, name="box_bias")(boxes_in), layers.Multiply()([Variable2(box_weight_1, name="box_weight_1")(boxes_in), boxes_in])])) - 0.5)
-
-    linear_LR = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(features), features]), axis=-1)
-    features_LR = tf.sigmoid(layers.Add()([Variable2(LR_bias, name="LR_bias")(linear_LR), linear_LR]))
-
-    num_labels = counts[0, 0]
-    num_boxes = counts[0, 1]
-
-    pairwise_potentials = tf.pad(features_LR, [[0, 0], [0, num_boxes], [0, num_boxes]]) + layers.Multiply()([Variable2(boxes_weight_2, name="box_weight_2")(boxes_sim), boxes_sim])
-
-    matrix_1 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=-1)
-    matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=0)
-    weight = Variable2(weight, name="weight")(Q_in)
-    Q = Q_in
-    for _ in range(num_iterations):
-        Q = mean_field_iteration(Q_in, pairwise_potentials, Q, num_labels, matrix_1, matrix_2, weight)
-    output = Q
-
-    model = Model(inputs=[Q_in, features, boxes_in, counts], outputs=output)
-    model.compile(loss=custom_loss, optimizer=optimizers.Adam(learning_rate=3e-3), metrics=[], run_eagerly=True)
-    return model
-
 def mean_field_CRF_test(feature_processing_model, num_iterations=60, num_features=standard_values.num_pairwise_features):
     features = layers.Input(shape=(None, None, num_features), name="features")
     boxes = layers.Input(shape=(None, None), name="boxes")
@@ -150,8 +123,9 @@ def mean_field_CRF_test(feature_processing_model, num_iterations=60, num_feature
     num_boxes = tf.shape(boxes)[1]
     num_labels = num_surfaces + num_boxes
 
-    boxes_dense = tf.squeeze(layers.Dense(1, kernel_initializer=initializers.constant(1), bias_initializer=initializers.constant(-0.2))(tf.expand_dims(boxes, axis=-1)), axis=-1)
+    boxes_dense = tf.squeeze(layers.Dense(1, kernel_initializer=initializers.constant(value=0), bias_initializer=initializers.constant(value=0))(tf.expand_dims(boxes, axis=-1)), axis=-1)
     boxes_pad = tf.pad(boxes_dense, [[0, 0], [num_surfaces, 0], [0, num_boxes]])
+    boxes_pad = boxes_pad + tf.transpose(boxes_pad, perm=[0, 2, 1])
 
     pairwise_potentials_pred = feature_processing_model(features)
     initial_Q = pairwise_potentials_pred * (1 - tf.eye(num_surfaces)) + tf.eye(num_surfaces)
@@ -159,9 +133,8 @@ def mean_field_CRF_test(feature_processing_model, num_iterations=60, num_feature
     initial_Q = tf.pad(initial_Q, [[0, 0], [0, num_boxes], [0, num_boxes]])
 
     pairwise_potentials = pairwise_potentials_pred - 0.5
-    pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
+    pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])  + boxes_pad
     pairwise_potentials_pred = tf.pad(pairwise_potentials_pred, [[0, 0], [0, num_boxes], [0, num_boxes]])
-    pairwise_potentials_pred = pairwise_potentials_pred + boxes_pad
 
     matrix_1 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=-1)
     matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=0)
@@ -173,7 +146,7 @@ def mean_field_CRF_test(feature_processing_model, num_iterations=60, num_feature
         Q_acc = tf.concat([Q_acc, tf.expand_dims(Q, axis=1)], axis=1)
 
     model = Model(inputs=[features, boxes], outputs=Q_acc)
-    model.compile(loss=custom_loss_new_last, optimizer=optimizers.Adam(learning_rate=3e-2), metrics=[], run_eagerly=True)
+    model.compile(loss=custom_loss_new_last, optimizer=optimizers.Adam(learning_rate=3e-2), metrics=[], run_eagerly=False)
 
     return model
 
@@ -374,13 +347,14 @@ def train_CRF(clf_type="Neural"):
     #pw_clf.get_layer("dense").set_weights([lr_clf.coef_.reshape(14, 1), lr_clf.intercept_])
     #print(lr_clf.coef_.reshape(14, 1), lr_clf.intercept_)
     #nn = assemble_objects_pairwise_clf.get_nn_clf()
-    #pw_clf.load_weights("parameters/pairwise_surface_clf/clf_Neural.ckpt")
+    pw_clf.load_weights("parameters/pairwise_surface_clf/clf_Neural.ckpt")
     #for name in ["dense_1", "dense_2", "dense_3"]:
     #    pw_clf.get_layer(name).set_weights(nn.get_layer(name).get_weights())
     CRF = mean_field_CRF_test(pw_clf)
     #CRF.load_weights("test.ckpt")
-    CRF.fit(dataset.batch(1), verbose=1, epochs=15)
-    print(CRF.trainable_weights)
+    #print(CRF.trainable_weights)
+    #CRF.fit(dataset.batch(1), verbose=1, epochs=15)
+    #print(CRF.trainable_weights)
 
     # CRF = mean_field_CRF_test(LR_model())
     # print(CRF.evaluate(dataset.batch(1), verbose=1))
@@ -400,13 +374,13 @@ def assemble_objects_crf(crf, models, data):
 
     inputs = [np.asarray([x]) for x in [similarity_matrix, data["bbox_overlap"][:, 1:]]]
 
-    pw_clf_2 = LR_model()
-    lr_clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_LR.pkl", "rb"))
-    pw_clf_2.get_layer("dense").set_weights([lr_clf.coef_.reshape(14, 1), lr_clf.intercept_])
-    crf_2 = mean_field_CRF_test(pw_clf_2)
+    # pw_clf_2 = LR_model()
+    # lr_clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_LR.pkl", "rb"))
+    # pw_clf_2.get_layer("dense").set_weights([lr_clf.coef_.reshape(14, 1), lr_clf.intercept_])
+    # crf_2 = mean_field_CRF_test(pw_clf_2)
 
     prediction = crf.predict(inputs)
-    prediction2 = crf_2.predict(inputs)
+    #prediction2 = crf_2.predict(inputs)
     data["final_surfaces"] = create_surfaces_from_crf_output(prediction[0, -1], data["surfaces"])
     return data
 
@@ -424,7 +398,6 @@ def get_prediction_model(clf_type="LR"):
 
     crf = mean_field_CRF_test(pw_clf)
     crf.load_weights(f"data/CRF_pairwise_clf/{clf_type}.ckpt")
-    print(crf.get_layer("boxes_sub").weights)
     return lambda x, y: assemble_objects_crf(crf, assemble_surface_models, load_images.load_image_and_surface_information(y))
 
 def predict_indices(indices=standard_values.test_indices, clf_type="LR"):
@@ -445,4 +418,6 @@ def predict_indices(indices=standard_values.test_indices, clf_type="LR"):
         plot_image.plot_surfaces(data["final_surfaces"])
 
 if __name__ == '__main__':
+    #predict_indices([100], clf_type="Neural")
+    #quit()
     train_CRF("Neural")
