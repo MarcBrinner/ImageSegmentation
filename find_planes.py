@@ -1,10 +1,9 @@
 import gc
 import pickle
-
-import numpy as np
-
+import tensorflow as tf
+from tensorflow.keras import Model, regularizers, layers, optimizers
 from image_processing_models_GPU import normals_and_log_depth_model_GPU, get_angle_arrays, Counts,\
-    gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, regularizers, optimizers, Model, Components, print_tensor, losses
+    gaussian_filter_with_depth_factor_model_GPU, Variable, Variable2, Components
 from load_images import *
 from standard_values import *
 from plot_image import *
@@ -13,15 +12,22 @@ from numpy.lib.stride_tricks import sliding_window_view
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures
 
-variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight", "dense_1", "dense_2"]
 similarity_normalizers = [6, 2, 1/50, 1/40]
 gauss_CRF_parameters = list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 10000.0, 1 / 100, 10000.0, 1 / 200, 1 / 100, 10000.0, 20.0, 0.01], (12, 1, 1)))
 LR_CRF_parameters = [0.01, 15000]
 standard_kernel_size = 7
 div_x, div_y = 4, 4
 
+def get_GPU_models(mode="LR", kernel_size=standard_kernel_size):
+    size_x, size_y = int(width / div_x), int(height / div_y)
+    return gaussian_filter_with_depth_factor_model_GPU(), \
+           find_surfaces_model_GPU(), \
+           normals_and_log_depth_model_GPU(), \
+           conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x) if mode == "LR" else \
+           conv_crf_Gauss(*gauss_CRF_parameters, kernel_size, size_y, size_x)
+
 @njit()
-def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
+def extract_training_samples(diffs, annotation_windows, annotation_centrals, window, w):
     inputs_0 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     inputs_1 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     for i_1 in range(np.shape(diffs)[0]):
@@ -42,7 +48,7 @@ def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
     del inputs_1[0]
     return inputs_0, inputs_1
 
-def create_dataset(window=7):
+def create_training_dataset(window=7):
     w = 2*window + 1
     pos_diffs = np.sqrt(np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1)) * similarity_normalizers[3]
 
@@ -68,7 +74,7 @@ def create_dataset(window=7):
         annotation_windows = sliding_window(annotation)
 
         diffs = np.stack([depth_diffs, angle_diffs, rgb_diffs, np.broadcast_to(pos_diffs, np.shape(angle_diffs))], axis=-1)
-        in_0, in_1 = extract_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w)
+        in_0, in_1 = extract_training_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w)
         inputs_0.extend(in_0)
         inputs_1.extend(in_1)
         print(len(inputs_0), len(inputs_1))
@@ -442,28 +448,19 @@ def find_surfaces(models, image_data, mode, kernel_size, plot_result=False, save
         np.save(f"out/{save_index}/edges.npy", data["depth_edges"])
     return data
 
-def get_models(mode="LR", kernel_size=standard_kernel_size):
-    size_x, size_y = int(width / div_x), int(height / div_y)
-    return gaussian_filter_with_depth_factor_model_GPU(), \
-           find_surfaces_model_GPU(), \
-           normals_and_log_depth_model_GPU(), \
-           conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x) if mode == "LR" else \
-           conv_crf_Gauss(*gauss_CRF_parameters, kernel_size, size_y, size_x)
-
-
 def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_kernel_size, save_data=True, plot_result=False, return_results=False):
-    models = get_models(mode, kernel_size)
+    models = get_GPU_models(mode, kernel_size)
     results = []
     for index in image_indices:
         image_data = load_image(index)
-        data = find_surfaces(models, image_data, mode, kernel_size, False, -1 if not save_data else index)
+        data = find_surfaces(models, image_data, mode, kernel_size, plot_result, -1 if not save_data else index)
         if return_results:
             results.append(data)
     if return_results:
         return results
 
-def get_find_surface_function(mode="LR", kernel_size=standard_kernel_size):
-    models = get_models(mode, kernel_size)
+def find_surface_model(mode="LR", kernel_size=standard_kernel_size):
+    models = get_GPU_models(mode, kernel_size)
     return lambda x: find_surfaces(models, x, mode, kernel_size, False, -1)
 
 if __name__ == '__main__':

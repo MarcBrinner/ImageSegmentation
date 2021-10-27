@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import tensorflow_addons as tfa
 from standard_values import *
-from tensorflow.keras import layers, Model, initializers, optimizers, regularizers, losses
+from tensorflow.keras import layers, Model, initializers
 
 def print_tensor(input):
     p = Print_Tensor()(input)
@@ -132,7 +132,6 @@ def gaussian_filter_with_depth_factor_model_GPU(size=3, height=height, width=wid
 
     model = Model(inputs=[depth_image, indices], outputs=[out])
     return lambda x, y:  model.predict([np.asarray([x]), np.asarray([y])])
-
 
 def convert_to_log_depth(depth_image):
     log_image = tf.math.log(depth_image)

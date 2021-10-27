@@ -1,26 +1,16 @@
-import time
-
 import find_planes
-import plot_image
 import process_surfaces as ps
 from standard_values import *
-from numba import njit
 from load_images import *
-from find_planes import plot_surfaces
+from plot_image import plot_surfaces
 from image_processing_models_GPU import extract_texture_function, chi_squared_distances_model_2D
 
 parameters_candidates = [(0.6, 0.5, 7, 2), (0.8, 1, 7), (0.8, 0.7, 1.15)]
 
-def prepare_border_centers(neighbors, border_centers):
-    result = []
-    for i in range(len(neighbors)):
-        current_list = []
-        for neighbor in neighbors[i]:
-            current_list.append(border_centers[i][neighbor])
-        if len(current_list) == 0:
-            current_list.append(np.asarray([0, 0]))
-        result.append(np.asarray(current_list, dtype="float32"))
-    return result
+def get_GPU_models():
+    return chi_squared_distances_model_2D((10, 10), (4, 4)), \
+           chi_squared_distances_model_2D((4, 4), (1, 1)), \
+           extract_texture_function(), \
 
 def determine_join_candidates(data, thresholds):
     texture_similarities, color_similarities, normal_similarities, planes, num_surfaces = data["sim_texture"], data["sim_color"],\
@@ -67,23 +57,7 @@ def determine_join_candidates(data, thresholds):
     candidates["convexity"] = similar_patches_4
     return candidates
 
-@njit()
-def join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_surfaces):
-    labels = np.arange(num_surfaces)
-    for i in range(num_surfaces):
-        for j in range(i + 1, num_surfaces):
-            if join_matrix[i][j] >= 1:
-                l = labels[j]
-                new_l = labels[i]
-                for k in range(num_surfaces):
-                    if labels[k] == l:
-                        labels[k] = new_l
-    for y in range(height):
-        for x in range(width):
-            surfaces[y][x] = labels[surfaces[y][x]]
-    return surfaces, labels
-
-def remove_concave_connections_after_occlusion_reasoning(join_matrices, data):
+def remove_concave_connections(join_matrices, data):
     similarity = data["sim_color"] + data["sim_texture"]
     join_matrix_occlusion, join_matrix_before_occlusion = join_matrices["disconnected"], join_matrices["convex"]
     centroids, depth_image, coplanarity, concave, num_surfaces = data["centroids"], data["depth"], data["coplanarity"], data["concave"], data["num_surfaces"]
@@ -124,7 +98,6 @@ def remove_concave_connections_after_occlusion_reasoning(join_matrices, data):
         joins[join_probability_value] = (i, j)
 
     final_join_matrix = join_matrix_before_occlusion.copy()
-    l = sorted(joins.items(), key=lambda x: float(x[0]))
     for value, (x, y) in sorted(joins.items(), key=lambda x: float(x[0])):
         if x in groups[y]:
             continue
@@ -147,28 +120,6 @@ def remove_concave_connections_after_occlusion_reasoning(join_matrices, data):
 
     return final_join_matrix
 
-def determine_convexly_connected_surfaces(candidates, data):
-    patch_points, neighbors, border_centers, normal_angles, surfaces, points_3d, coplanarity, norm_image = data["patch_points"],\
-                 data["neighbors"], data["border_centers"], data["angles"], data["surfaces"], data["points_3d"], data["coplanarity"], data["norm"]
-    nearest_points = ps.calculate_nearest_points(patch_points, prepare_border_centers(neighbors, border_centers))
-    convex, concave, new_surfaces = ps.determine_convexity_for_candidates(data, candidates, nearest_points)
-    return convex, concave, new_surfaces
-
-def determine_disconnected_join_candidates(relabeling, candidates, data):
-    candidates_all = candidates["occlusion"] + candidates["occlusion_coplanar"] + candidates["curved"]
-    candidates_all[candidates_all > 1] = 1
-    input = ps.determine_occlusion_line_points(candidates_all, data["patch_points"], data["avg_pos"], data["num_surfaces"])
-    if len(input[0]) == 0: return np.zeros((data["num_surfaces"], data["num_surfaces"])), data["surfaces"]
-    closest_points = ps.calculate_nearest_points(*input)
-    join_matrix, new_surfaces = ps.determine_occlusion(candidates_all, candidates, closest_points, relabeling, data)
-    return join_matrix, new_surfaces
-
-def get_GPU_models():
-    return chi_squared_distances_model_2D((10, 10), (4, 4)), \
-           chi_squared_distances_model_2D((4, 4), (1, 1)), \
-           extract_texture_function(), \
-
-
 def assemble_surfaces(data, models, plot=False):
     color_similarity_model, angle_similarity_model, texture_model = models
 
@@ -184,19 +135,19 @@ def assemble_surfaces(data, models, plot=False):
     join_candidates["occlusion_coplanar"] = join_candidates["occlusion_coplanar"]*data["coplanarity"]
 
     join_surfaces = {}
-    join_surfaces["convex"], data["concave"], new_surfaces = determine_convexly_connected_surfaces(join_candidates["convexity"], data)
-    _, relabeling = join_surfaces_according_to_join_matrix(join_surfaces["convex"], data["surfaces"].copy(), data["num_surfaces"])
-    join_surfaces["disconnected"], new_surfaces = determine_disconnected_join_candidates(relabeling, join_candidates, data)
-    join_surfaces["final"] = remove_concave_connections_after_occlusion_reasoning(join_surfaces, data)
+    join_surfaces["convex"], data["concave"], new_surfaces = ps.determine_convexly_connected_surfaces(join_candidates["convexity"], data)
+    _, relabeling = ps.join_surfaces_according_to_join_matrix(join_surfaces["convex"], data["surfaces"].copy(), data["num_surfaces"])
+    join_surfaces["disconnected"], new_surfaces = ps.determine_disconnected_join_candidates(relabeling, join_candidates, data)
+    join_surfaces["final"] = remove_concave_connections(join_surfaces, data)
 
-    surfaces, _ = join_surfaces_according_to_join_matrix(join_surfaces["final"], data["surfaces"], data["num_surfaces"])
+    surfaces, _ = ps.join_surfaces_according_to_join_matrix(join_surfaces["final"], data["surfaces"], data["num_surfaces"])
     if plot:
         plot_surfaces(surfaces, False)
     data["final_surfaces"] = surfaces
     return data
 
-def get_prediction_model():
-    surface_model = find_planes.get_find_surface_function()
+def get_full_prediction_model():
+    surface_model = find_planes.find_surface_model()
     assemble_surface_models = get_GPU_models()
     return lambda x: assemble_surfaces(surface_model(x), assemble_surface_models, False)
 

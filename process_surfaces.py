@@ -658,3 +658,123 @@ def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_
     data["neighbors"], data["border_centers"] = determine_neighboring_surfaces_and_border_centers(data["surfaces"], data["depth_edges"], data["num_surfaces"])
     data["norm"] = np.linalg.norm(data["points_3d"], axis=-1)
     data["depth_extend"] = calculate_depth_extend(data["surfaces"], data["norm"], data["points_3d"], data["num_surfaces"])
+
+def find_optimal_surface_joins(data):
+    annotation, surfaces, num_surfaces, num_boxes = data["annotation"], data["surfaces"], data["num_surfaces"], data["num_bboxes"]
+    num_annotations = np.max(annotation)
+    annotation_counter = np.zeros((num_surfaces, num_annotations+1))
+    annotation_counter[:, 0] = np.ones(num_surfaces)
+    counts = np.zeros(num_surfaces)
+    for y in range(height):
+        for x in range(width):
+            if (s := surfaces[y][x]) != 0:
+                counts[s] += 1
+                if (a := annotation[y][x]) != 0:
+                    annotation_counter[s][a] += 1
+
+    counts[counts == 0] = 1
+    annotation_counter[np.divide(annotation_counter, np.expand_dims(counts, axis=-1)) < 0.6] = 0
+    annotation_correspondence = np.argmax(annotation_counter, axis=-1)
+    annotation_correspondence[np.max(annotation_counter, axis=-1) == 0] = 0
+
+    Y_1 = np.zeros((num_surfaces, num_surfaces))
+    Y_2 = np.zeros((num_surfaces, num_surfaces))
+    for s_1 in range(1, num_surfaces):
+        for s_2 in range(s_1+1, num_surfaces):
+            if (a := annotation_correspondence[s_1]) == (b := annotation_correspondence[s_2]) and a != 0:
+                Y_1[s_1][s_2] = 1
+            elif a > 0 or b > 0:
+                Y_2[s_1][s_2] = 1
+
+    Y = np.pad(np.stack([Y_1, Y_2], axis=0), ((0, 0), (0, num_boxes), (0, num_boxes)))
+    return np.asarray([Y[:, 1:, 1:]])
+
+def get_position_and_occlusion_infos(data):
+    avg_positions, patch_points, surfaces, norm_image, num_surfaces = data["avg_pos"], data["patch_points"], data["surfaces"], data["norm"], data["num_surfaces"]
+    input = determine_occlusion_line_points(np.ones((num_surfaces, num_surfaces)), patch_points, avg_positions, num_surfaces)
+    nearest_points_for_occlusion = calculate_nearest_points(*input)
+    join_matrix, close_matrix, closest_points = determine_occlusion_candidates_and_connection_infos(nearest_points_for_occlusion, data)
+    return join_matrix, close_matrix, closest_points
+
+def determine_convexly_connected_surfaces(candidates, data):
+    patch_points, neighbors, border_centers, normal_angles, surfaces, points_3d, coplanarity, norm_image = data["patch_points"],\
+                 data["neighbors"], data["border_centers"], data["angles"], data["surfaces"], data["points_3d"], data["coplanarity"], data["norm"]
+    nearest_points = calculate_nearest_points(patch_points, prepare_border_centers(neighbors, border_centers))
+    convex, concave, new_surfaces = determine_convexity_for_candidates(data, candidates, nearest_points)
+    return convex, concave, new_surfaces
+
+def prepare_border_centers(neighbors, border_centers):
+    result = []
+    for i in range(len(neighbors)):
+        current_list = []
+        for neighbor in neighbors[i]:
+            current_list.append(border_centers[i][neighbor])
+        if len(current_list) == 0:
+            current_list.append(np.asarray([0, 0]))
+        result.append(np.asarray(current_list, dtype="float32"))
+    return result
+
+def calculate_pairwise_similarity_features_for_surfaces(data, models):
+    color_similarity_model, angle_similarity_model, texture_model, object_detector = models[:4]
+
+    ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
+
+    candidates = {"convexity": np.ones((data["num_surfaces"], data["num_surfaces"]))}
+    data["sim_color"] = color_similarity_model(data["hist_color"])
+    data["sim_texture"] = calculate_texture_similarities(data["hist_texture"], data["num_surfaces"])
+    data["sim_angle"] = angle_similarity_model(data["hist_angle"])/20
+
+    data["planes"] = determine_even_planes(data)
+    data["same_plane_type"] = (np.tile(np.expand_dims(data["planes"], axis=0), [data["num_surfaces"], 1]) == np.tile(np.expand_dims(data["planes"], axis=-1), [1, data["num_surfaces"]])).astype("int32")
+    data["both_curved"] = (lambda x: np.dot(np.transpose(x), x))(np.expand_dims(1-data["planes"], axis=0))
+    data["coplanarity"] = determine_coplanarity(candidates["convexity"], data["centroids"].astype("float64"), data["avg_normals"], data["planes"], data["num_surfaces"])
+    data["convex"], data["concave"], _ = determine_convexly_connected_surfaces(candidates["convexity"], data)
+    data["neighborhood_mat"] = neighborhood_list_to_matrix(data)
+    data["bboxes"] = object_detector(data["rgb"])
+    data["bbox_overlap"] = calc_box_and_surface_overlap(data)
+    data["bbox_crf_matrix"] = create_bbox_CRF_matrix(data["bbox_overlap"])
+    data["bbox_similarity_matrix"] = create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"], data["bboxes"])
+    data["num_bboxes"] = np.shape(data["bbox_overlap"])[0]
+    data["occlusion_mat"], data["close_mat"], data["closest_points"] = get_position_and_occlusion_infos(data)
+    data["close_mat"][data["neighborhood_mat"] == 1] = 0
+    data["distances"] = np.sqrt(np.sum(np.square(data["closest_points"] - np.swapaxes(data["closest_points"], axis1=0, axis2=1)), axis=-1))/500
+    data["depth_extend_distances"] = create_depth_extend_distance_matrix(data)/1000
+
+def create_similarity_feature_matrix(data):
+    keys = ["bbox_similarity_matrix", "sim_texture", "sim_color", "sim_angle", "convex", "coplanarity", "neighborhood_mat",
+            "concave", "distances", "close_mat", "occlusion_mat", "depth_extend_distances", "same_plane_type", "both_curved"]
+    matrix = np.stack([data[key][1:,1:] for key in keys], axis=-1)
+    return matrix
+
+@njit()
+def join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_surfaces):
+    labels = np.arange(num_surfaces)
+    for i in range(num_surfaces):
+        for j in range(i + 1, num_surfaces):
+            if join_matrix[i][j] >= 1:
+                l = labels[j]
+                new_l = labels[i]
+                for k in range(num_surfaces):
+                    if labels[k] == l:
+                        labels[k] = new_l
+    for y in range(height):
+        for x in range(width):
+            surfaces[y][x] = labels[surfaces[y][x]]
+    return surfaces, labels
+
+def determine_disconnected_join_candidates(relabeling, candidates, data):
+    candidates_all = candidates["occlusion"] + candidates["occlusion_coplanar"] + candidates["curved"]
+    candidates_all[candidates_all > 1] = 1
+    input = determine_occlusion_line_points(candidates_all, data["patch_points"], data["avg_pos"], data["num_surfaces"])
+    if len(input[0]) == 0: return np.zeros((data["num_surfaces"], data["num_surfaces"])), data["surfaces"]
+    closest_points = calculate_nearest_points(*input)
+    join_matrix, new_surfaces = determine_occlusion(candidates_all, candidates, closest_points, relabeling, data)
+    return join_matrix, new_surfaces
+
+def create_surfaces_from_crf_output(prediction, surfaces):
+    max_vals = np.argmax(prediction, axis=-1)
+    new_surfaces = surfaces.copy()
+    for i in range(len(max_vals)):
+        if max_vals[i] != i:
+            new_surfaces[new_surfaces == i+1] = max_vals[i]+1
+    return new_surfaces
