@@ -4,6 +4,7 @@ import numpy as np
 import assemble_objects_CRF
 import assemble_objects_pairwise_clf
 import assemble_objects_rules
+import load_images
 import plot_image
 import matplotlib.pyplot as plt
 from standard_values import *
@@ -17,12 +18,12 @@ model_types = ["Rules"]
 
 @njit()
 def extract_IoU_information(annotation, detected_objects):
-    num_detections = np.max(detected_objects)
-    num_annotations = np.max(annotation)
+    num_detections = np.max(detected_objects) + 1
+    num_annotations = np.max(annotation) + 1
 
-    overlap_matrix = np.zeros((num_detections + 1, num_annotations + 1))
-    count_matrix_detections = np.zeros(num_detections + 1)
-    count_matrix_annotations = np.zeros(num_annotations + 1)
+    overlap_matrix = np.zeros((num_detections, num_annotations))
+    count_matrix_detections = np.zeros(num_detections)
+    count_matrix_annotations = np.zeros(num_annotations)
 
     for y in range(height):
         for x in range(width):
@@ -33,9 +34,9 @@ def extract_IoU_information(annotation, detected_objects):
             count_matrix_annotations[a] += 1
             overlap_matrix[o, a] += 1
 
-    overlap_matrix = overlap_matrix[1:, 1:]
-    count_matrix_detections = count_matrix_detections[1:]
-    count_matrix_annotations = count_matrix_annotations[1:]
+    #overlap_matrix = overlap_matrix[1:, 1:]
+    #count_matrix_detections = count_matrix_detections[1:]
+    #count_matrix_annotations = count_matrix_annotations[1:]
 
     counts_detections_tiled = np.repeat(count_matrix_detections, num_annotations).reshape((num_detections, num_annotations))
     counts_annotations_tiled = np.transpose(np.repeat(count_matrix_annotations, num_detections).reshape((num_annotations, num_detections)))
@@ -70,12 +71,18 @@ def evaluate_Avg_max_IoU(evaluation_inputs): # Alias Jaccard Index
 
 def evaluate_model(model_type="Rules", model_args={}):
     if model_type == "Rules":
-        model = assemble_objects_rules.get_prediction_model()
-    elif model_type == "Pairs" or model_type == "Pairs CRF":
+        model = assemble_objects_rules.get_full_prediction_model()
+    elif "Pairs" in model_type:
         model_args["model_type"] = model_type
-        model = assemble_objects_pairwise_clf.get_prediction_model(**model_args)
-    elif model_type == "CRF":
-        model = assemble_objects_CRF.get_prediction_model(**model_args)
+        model = assemble_objects_pairwise_clf.get_full_prediction_model(**model_args)
+    elif "CRF" in model_type:
+        model_args["model_type"] = model_type
+        model = assemble_objects_CRF.get_full_prediction_model(**model_args)
+    elif model_type == "mrcnn":
+        model = load_images.load_mrcnn_predictions
+    else:
+        print("Model type not recognized.")
+        quit()
 
     evaluation_inputs = []
     for index in tqdm(test_indices):
@@ -86,29 +93,5 @@ def evaluate_model(model_type="Rules", model_args={}):
     score = evaluate_Avg_max_IoU(evaluation_inputs)
     print(score)
 
-def save_evaluation_inputs(model_type="Rules"):
-    if model_type not in model_types:
-        print("Model type not recognized.")
-        quit()
-
-    if model_type == "Rules":
-        model = assemble_objects_rules.get_prediction_model()
-
-    evaluation_inputs = []
-    for index in test_indices:
-        image_data = load_image(index)
-        prediction = model(image_data)
-        evaluation_inputs.append((image_data[2], prediction["final_surfaces"]))
-
-    pickle.dump(evaluation_inputs, open(f"out/evaluation_inputs/{model_type}.pkl", "wb"))
-    return evaluation_inputs
-
-def load_evaluation_inputs(model_type="Rules"):
-    if model_type not in model_types:
-        print("Model type not recognized.")
-        quit()
-    inputs = pickle.load(open(f"out/evaluation_inputs/{model_type}.pkl", "rb"))
-    return inputs
-
 if __name__ == '__main__':
-    evaluate_model(model_type="CRF", model_args={"clf_type": "Neural"})
+    evaluate_model(model_type="Pairs CRF", model_args={"clf_type": "Forest"})

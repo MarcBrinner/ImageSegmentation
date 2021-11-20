@@ -1,11 +1,11 @@
-import find_planes
+import find_planes_new
 import process_surfaces as ps
 from standard_values import *
 from load_images import *
 from plot_image import plot_surfaces
 from image_processing_models_GPU import extract_texture_function, chi_squared_distances_model_2D
 
-parameters_candidates = [(0.6, 0.5, 7, 2), (0.8, 1, 7), (0.8, 0.7, 1.15)]
+parameters_candidates = [(0.6, 0.5, 7, 2, 1), (0.8, 1, 7), (0.8, 0.7, 1.15)]
 
 def get_GPU_models():
     return chi_squared_distances_model_2D((10, 10), (4, 4)), \
@@ -24,6 +24,7 @@ def determine_join_candidates(data, thresholds):
     similar_patches_1[color_similarities < thresholds[0][1]] = 1
     similar_patches_1[texture_similarities > thresholds[0][0]] = 0
     similar_patches_1[normal_similarities > thresholds[0][2]] = 0
+    similar_patches_1[normal_similarities < thresholds[0][4]] = 0
     for i in range(num_surfaces):
         if planes[i] == 1:
             continue
@@ -120,9 +121,9 @@ def remove_concave_connections(join_matrices, data):
 
     return final_join_matrix
 
-def assemble_surfaces(data, models, plot=False):
+def assemble_surfaces(data, models):
     color_similarity_model, angle_similarity_model, texture_model = models
-
+    #plot_surfaces(data["surfaces"])
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
     data["sim_color"] = color_similarity_model(data["hist_color"])
@@ -133,6 +134,7 @@ def assemble_surfaces(data, models, plot=False):
 
     data["coplanarity"] = ps.determine_coplanarity(join_candidates["occlusion_coplanar"], data["centroids"].astype("float64"), data["avg_normals"], data["planes"], data["num_surfaces"])
     join_candidates["occlusion_coplanar"] = join_candidates["occlusion_coplanar"]*data["coplanarity"]
+    join_candidates["occlusion"][data["depth_extend_distance_ratio"] > 5] = 0
 
     join_surfaces = {}
     join_surfaces["convex"], data["concave"], new_surfaces = ps.determine_convexly_connected_surfaces(join_candidates["convexity"], data)
@@ -141,23 +143,30 @@ def assemble_surfaces(data, models, plot=False):
     join_surfaces["final"] = remove_concave_connections(join_surfaces, data)
 
     surfaces, _ = ps.join_surfaces_according_to_join_matrix(join_surfaces["final"], data["surfaces"], data["num_surfaces"])
-    if plot:
-        plot_surfaces(surfaces, False)
+
     data["final_surfaces"] = surfaces
     return data
+
+def assemble_objects_for_indices(indices, plot=True):
+    models = get_GPU_models()
+    results = []
+    for index in range(len(indices)):
+        print(index)
+        data = load_image_and_surface_information(indices[index])
+        data = assemble_surfaces(data, models)
+
+        if plot:
+            plot_surfaces(data["final_surfaces"])
+        results.append(data["final_surfaces"])
+    return results
 
 def get_full_prediction_model():
     surface_model = find_planes.find_surface_model()
     assemble_surface_models = get_GPU_models()
-    return lambda x: assemble_surfaces(surface_model(x), assemble_surface_models, False)
+    return lambda x: assemble_surfaces(surface_model(x), assemble_surface_models)
 
 def main():
-    models = get_GPU_models()
-    for index in list(range(0, 111)):
-        print(index)
-        data = load_image_and_surface_information(index)
-        assemble_surfaces(data, models)
-    quit()
+    assemble_objects_for_indices(test_indices)
 
 if __name__ == '__main__':
     main()

@@ -1,6 +1,8 @@
 import numpy as np
 import os
 import re
+
+import plot_image
 import utils
 from PIL import Image
 
@@ -31,4 +33,9 @@ def load_image_and_surface_information(index):
     data["depth_edges"] = np.load(f"out/{index}/edges.npy")
     data["vectors"] = np.load(f"out/{index}/vectors.npy")
     data["num_surfaces"] = int(np.max(data["surfaces"]) + 1)
+    return data
+
+def load_mrcnn_predictions(image_data, index):
+    data = {}
+    data["final_surfaces"] = np.load(f"data/mask_rcnn predictions/{index}.npy").astype("int64")
     return data

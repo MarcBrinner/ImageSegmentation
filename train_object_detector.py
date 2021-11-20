@@ -11,8 +11,6 @@
 #
 #================================================================
 
-import os
-import shutil
 import numpy as np
 import tensorflow as tf
 import plot_image
@@ -26,7 +24,6 @@ from PIL import Image
 
 def train(load_trained_weights=False):
     trainset = Dataset('train')
-    logdir = "./data/log"
     steps_per_epoch = len(trainset)
     global_steps = tf.Variable(1, trainable=False, dtype=tf.int64)
     warmup_steps = cfg.TRAIN.WARMUP_EPOCHS * steps_per_epoch
@@ -47,8 +44,6 @@ def train(load_trained_weights=False):
     else:
         utils.load_weights(model, "parameters/yolov3.weights")
     optimizer = tf.keras.optimizers.Adam()
-    if os.path.exists(logdir): shutil.rmtree(logdir)
-    writer = tf.summary.create_file_writer(logdir)
 
     def train_step(image_data, target):
         with tf.GradientTape() as tape:
@@ -80,15 +75,6 @@ def train(load_trained_weights=False):
                     (1 + tf.cos((global_steps - warmup_steps) / (total_steps - warmup_steps) * np.pi))
                 )
             optimizer.lr.assign(lr.numpy())
-
-            # writing summary data
-            with writer.as_default():
-                tf.summary.scalar("lr", optimizer.lr, step=global_steps)
-                tf.summary.scalar("loss/total_loss", total_loss, step=global_steps)
-                tf.summary.scalar("loss/giou_loss", giou_loss, step=global_steps)
-                tf.summary.scalar("loss/conf_loss", conf_loss, step=global_steps)
-                tf.summary.scalar("loss/prob_loss", prob_loss, step=global_steps)
-            writer.flush()
 
     for epoch in range(cfg.TRAIN.EPOCHS):
         trainset.shuffle()

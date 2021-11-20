@@ -1,27 +1,23 @@
-import numpy as np
-import pickle
-import tensorflow as tf
+import random
+
+import CRF_tools as crf_tools
+import post_processing
 import standard_values
+import tensorflow as tf
+import pickle
 import process_surfaces as ps
+import numpy as np
 from tensorflow.keras import layers, Model, losses, optimizers, regularizers, initializers
 from plot_image import plot_surfaces
-from find_planes import find_surface_model
-from image_processing_models_GPU import chi_squared_distances_model_2D, extract_texture_function
+from find_planes_new import find_surface_model
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
-from detect_objects import get_object_detector
 from load_images import load_image_and_surface_information
-from process_surfaces import find_optimal_surface_joins
+from process_surfaces import find_optimal_surface_joins_from_annotation
 
 clf_types = ["LR", "Tree", "Forest", "Neural", "Ensemble"]
 model_types = ["Pairs", "Pairs CRF", "Pairs CRF Boxes"]
-
-def get_GPU_models():
-    return chi_squared_distances_model_2D((10, 10), (4, 4)), \
-           chi_squared_distances_model_2D((4, 4), (1, 1)), \
-           extract_texture_function(), \
-           get_object_detector()
 
 def check_clf_type_and_model_type(model_type, clf_type):
     if (model_type not in model_types and model_type is not None) or (clf_type not in clf_types and clf_type is not None):
@@ -39,7 +35,6 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
     return new_Q
 
 def mean_field_CRF(num_iterations=60, use_boxes=True):
-    Q_in = layers.Input(shape=(None, None), name="Q")
     pairwise_potentials_in = layers.Input(shape=(None, None), name="potentials")
     boxes_in = layers.Input(shape=(None, None), name="boxes")
 
@@ -47,11 +42,16 @@ def mean_field_CRF(num_iterations=60, use_boxes=True):
     num_boxes = tf.shape(boxes_in)[1]
     num_labels = num_surfaces + num_boxes
 
-    boxes_dense = tf.squeeze(layers.Dense(1, kernel_initializer=initializers.constant(value=0), bias_initializer=initializers.constant(value=0))(tf.expand_dims(boxes_in, axis=-1)), axis=-1)
+    eye_mat = tf.eye(num_surfaces)
+    initial_Q = pairwise_potentials_in * (1-eye_mat) + eye_mat
+    initial_Q = tf.math.divide_no_nan(initial_Q, tf.reduce_sum(initial_Q, axis=-1, keepdims=True))
+    initial_Q = tf.pad(initial_Q, [[0, 0], [0, num_boxes], [0, num_boxes]])
+
+    boxes_dense = tf.squeeze(layers.Dense(1, kernel_initializer=initializers.constant(value=1.0), bias_initializer=initializers.constant(value=-0.3))(tf.expand_dims(boxes_in, axis=-1)), axis=-1)
     boxes_pad = tf.pad(boxes_dense, [[0, 0], [num_surfaces, 0], [0, num_boxes]])
     boxes_pad = boxes_pad + tf.transpose(boxes_pad, perm=[0, 2, 1])
 
-    pairwise_potentials = pairwise_potentials_in - 0.5
+    pairwise_potentials = tf.math.log(tf.math.divide_no_nan(pairwise_potentials_in, 1-pairwise_potentials_in))
     pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
 
     if use_boxes:
@@ -62,17 +62,18 @@ def mean_field_CRF(num_iterations=60, use_boxes=True):
     matrix_1 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=-1)
     matrix_2 = tf.ones((1, num_labels, num_labels, num_labels)) - tf.expand_dims(tf.expand_dims(tf.eye(num_labels, num_labels), axis=0), axis=0)
 
-    Q = Q_in
-    Q_acc = tf.expand_dims(Q, axis=1)
+    Q = initial_Q
+    Q_acc = tf.stack([pairwise_potentials, Q], axis=1)
     for _ in range(num_iterations):
-        Q = 0.9 * Q + 0.1 * mean_field_iteration(Q_in, pairwise_potentials, Q, num_labels, matrix_1, matrix_2)
+        Q = 0.9 * Q + 0.1 * mean_field_iteration(initial_Q, pairwise_potentials, Q, num_labels, matrix_1, matrix_2)
         Q_acc = tf.concat([Q_acc, tf.expand_dims(Q, axis=1)], axis=1)
 
-    model = Model(inputs=[Q_in, pairwise_potentials], outputs=Q_acc)
+    model = Model(inputs=[pairwise_potentials_in, boxes_in], outputs=Q_acc)
+    model.compile(loss=crf_tools.custom_loss_CRF, optimizer=optimizers.Adam(learning_rate=optimizers.schedules.ExponentialDecay(3e-3, decay_steps=50, decay_rate=0.95)), metrics=[], run_eagerly=False)
     return model
 
 def create_pairwise_clf_training_set():
-    models = get_GPU_models()
+    models = crf_tools.get_GPU_models()
     inputs = []
     labels = []
     for set_type in ["train", "test"]:
@@ -81,7 +82,7 @@ def create_pairwise_clf_training_set():
             data = load_image_and_surface_information(index)
             ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
 
-            Y = find_optimal_surface_joins(data)[0]
+            Y = find_optimal_surface_joins_from_annotation(data)[0]
             join_matrix = Y[0][:-data["num_bboxes"], :-data["num_bboxes"]]
             not_join_matrix = Y[1][:-data["num_bboxes"], :-data["num_bboxes"]]
 
@@ -161,12 +162,12 @@ def load_pw_clf(type_str):
         clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_{type_str}.pkl", "rb"))
     return clf
 
-def get_initial_probabilities(pairwise_potentials):
-    initial_probabilities = pairwise_potentials.copy()
-    num_labels = np.shape(pairwise_potentials)[0]
-    initial_probabilities[np.eye(num_labels) == 1] = 1
-    initial_probabilities = initial_probabilities / np.sum(initial_probabilities, axis=-1, keepdims=True)
-    return initial_probabilities
+def train_CRF_wrapper(clf_type="Forest"):
+    pw_clf = load_pw_clf(clf_type)
+
+    CRF = mean_field_CRF(use_boxes=True)
+    crf_tools.train_CRF(CRF, f"parameters/CRF_trained_without_clf/{clf_type}.ckpt", pw_clf)
+    print(CRF.trainable_weights)
 
 def assemble_objects_with_pairwise_classifier(clf, models, data):
     ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
@@ -185,9 +186,9 @@ def assemble_objects_crf(clf, models, crf, data):
 
     predictions = np.reshape(clf.predict_proba(np.reshape(feature_matrix, (-1, np.shape(feature_matrix)[-1])))[:, 1],
                              (data["num_surfaces"] - 1, data["num_surfaces"] - 1))
-    initial_probabilities = get_initial_probabilities(predictions)
-    crf_out = crf.predict([np.asarray([x]) for x in [initial_probabilities, predictions - 0.5]])
-    data["final_surfaces"] = ps.create_surfaces_from_crf_output(crf_out[0, -1], data["surfaces"])
+    predictions = predictions * 0.99 + 0.005
+    crf_out = crf.predict([np.asarray([x]) for x in [predictions, data["bbox_overlap"][:, 1:]]])
+    data["final_surfaces"] = crf_tools.create_surfaces_from_crf_output(crf_out[0, -1], data["surfaces"])
     return data
 
 def assemble_objects_for_indices(indices, model_type="Pairs CRF Boxes", clf_type="Forest", plot=True):
@@ -195,7 +196,7 @@ def assemble_objects_for_indices(indices, model_type="Pairs CRF Boxes", clf_type
 
     clf = load_pw_clf(clf_type)
 
-    models = get_GPU_models()
+    models = crf_tools.get_GPU_models()
     if "CRF" in model_type:
         crf = mean_field_CRF(num_iterations=60, use_boxes=("Boxes" in model_type))
 
@@ -217,16 +218,28 @@ def get_full_prediction_model(model_type="Pairs CRF Boxes", clf_type="Forest"):
     check_clf_type_and_model_type(model_type, clf_type)
 
     surface_model = find_surface_model()
-    assemble_surface_models = get_GPU_models()
+    post_processing_model = post_processing.get_postprocessing_model()
+    assemble_surface_models = crf_tools.get_GPU_models()
     clf = load_pw_clf(clf_type)
 
     if "CRF" in model_type:
-        return lambda x, y: assemble_objects_crf(clf, assemble_surface_models, mean_field_CRF(num_iterations=60, use_boxes=("Boxes" in model_type)), load_image_and_surface_information(y))
+        CRF = mean_field_CRF(num_iterations=60, use_boxes=("Boxes" in model_type))
+        if "Boxes" in model_type:
+            try:
+                pass
+                #CRF.load_weights(f"parameters/CRF_trained_without_clf/{clf_type}.ckpt")
+            except:
+                print("No trained parameters found. Using default parameters instead.")
+        return lambda x, y: post_processing_model(assemble_objects_crf(clf, assemble_surface_models, CRF, load_image_and_surface_information(y)))
     else:
-        return lambda x, y: assemble_objects_with_pairwise_classifier(clf, assemble_surface_models, load_image_and_surface_information(y))
+        return lambda x, y: post_processing_model(assemble_objects_with_pairwise_classifier(clf, assemble_surface_models, load_image_and_surface_information(y)))
 
+def main():
+    assemble_objects_for_indices([3, 76, 77], model_type="Pairs CRF")
 
 if __name__ == '__main__':
-    #create_training_set()
-    #evaluate_clf("Neural")
-    train_pairwise_classifier("Neural")
+    train_pairwise_classifier("Forest")
+    quit()
+    create_pairwise_clf_training_set()
+    quit()
+    assemble_objects_for_indices([0], "Pairs CRF", clf_type="Forest")

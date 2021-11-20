@@ -4,7 +4,6 @@ import warnings
 import numpy as np
 
 import plot_image
-import utils
 from standard_values import *
 from numba import njit
 from load_images import *
@@ -37,6 +36,7 @@ def determine_neighboring_surfaces_and_border_centers(surfaces, depth_edges, num
     neighbors = np.zeros((num_surfaces, num_surfaces))
     border_centers = np.zeros((num_surfaces, num_surfaces, 2))
     new_surfaces = surfaces.copy() * depth_edges
+    #plot_image.plot_surfaces(new_surfaces)
     for y in range(height):
         for x in range(width):
             if depth_edges[y][x] == 0 or surfaces[y][x] == 0:
@@ -95,7 +95,7 @@ def determine_surface_patch_centroids(data):
     return np.asarray(centroids), centroid_indices
 
 @njit()
-def extract_points(surface_patches, num_surfaces):
+def extract_individual_points_from_surfaces(surface_patches, num_surfaces):
     points = []
     for i in range(num_surfaces):
         points.append([[0, 0]])
@@ -134,21 +134,24 @@ def swap_values(vec):
 
 @njit()
 def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_point_1, space_point_2, c_1, c_2, points_3d):
-    normal_direction = normal_1 + normal_2 / 2
+    normal_direction = (normal_1 + normal_2) / 2
     normal_direction = normal_direction / np.linalg.norm(normal_direction)
-    d_1 = np.dot(space_point_1, normal_direction)
-    d_2 = np.dot(space_point_2, normal_direction)
-    d_dif = d_2 - d_1
+
+    vec_1 = space_point_2 - space_point_1
+    vec_2 = np.cross(normal_direction, vec_1)
+
+    plane_normal = np.cross(vec_1, vec_2)
+    plane_val = np.dot(space_point_1, plane_normal)
 
     direction = c_2 - c_1
     length = np.max(np.abs(direction))
     direction = direction / max(length, 1)
     above = 0
     below = 0
-    index_dif = 1 / length * d_dif
+
     for m in range(0, length):
         point = c_1 + m * direction
-        if np.dot(points_3d[int(point[1])][int(point[0])], normal_direction) > m * index_dif + d_1:
+        if np.dot(points_3d[int(point[1])][int(point[0])], plane_normal) > plane_val:
             above += 1
         else:
             below += 1
@@ -209,7 +212,7 @@ def determine_convexity_for_candidates(data, candidates, closest_points):
             above, below = determine_convexity_with_above_and_below_line(np.asarray(normal_1, dtype="float32"), np.asarray(normal_2, dtype="float32"),
                                                                          space_point_1, space_point_2, c_1, c_2, points_3d)
 
-            if (candidates[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*1.6) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)):
+            if (candidates[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*2) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)) or (v1-v2 > -0.04 and above < below * 0.1):
                 convex[i][surface_2] = 1
                 convex[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -544,7 +547,7 @@ def create_depth_extend_distance_matrix(data):
             distances[j, i] = d
     return distances
 
-def determine_occlusion_candidates_and_connection_infos(closest_points, data):
+def determine_occlusion_candidates_and_connection_info(closest_points, data):
     surfaces, norm_image, num_surfaces = data["surfaces"], data["norm"], data["num_surfaces"]
     occlusion_matrix = np.zeros((num_surfaces, num_surfaces))
     close_matrix = np.zeros((num_surfaces, num_surfaces))
@@ -642,8 +645,17 @@ def calculate_texture_similarities(texture_vecs, num_surfaces):
     diff = vecs_1 - vecs_2
     return np.linalg.norm(diff, axis=-1)/256
 
+def calc_depth_extend_to_depth_extend_distance_ratio(data):
+    average_depth_extends_objects = np.sum(np.abs(np.subtract(data["depth_extend"][:,:,0], data["depth_extend"][:,:,1])), axis=-1, keepdims=True)/4
+    average_depth_extends_pairs = (np.tile(average_depth_extends_objects, [1, data["num_surfaces"]]) +
+                                  np.tile(np.swapaxes(average_depth_extends_objects, 0, 1), [data["num_surfaces"], 1])) / 2
+    ratio = data["depth_extend_distances"] / average_depth_extends_pairs
+    ratio[np.isnan(ratio)] = 0
+    return ratio
+
+
 def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model):
-    data["patch_points"] = extract_points(data["patches"], data["num_surfaces"])
+    data["patch_points"] = extract_individual_points_from_surfaces(data["patches"], data["num_surfaces"])
     data["surfaces"] = relabel_surfaces(data["surfaces"], data["patches"])
     data["avg_pos"], data["counts"] = determine_pixel_counts_and_average_position_for_patches(data["surfaces"], data["num_surfaces"])
     data["centroids"], centroid_indices = determine_surface_patch_centroids(data)
@@ -658,8 +670,10 @@ def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_
     data["neighbors"], data["border_centers"] = determine_neighboring_surfaces_and_border_centers(data["surfaces"], data["depth_edges"], data["num_surfaces"])
     data["norm"] = np.linalg.norm(data["points_3d"], axis=-1)
     data["depth_extend"] = calculate_depth_extend(data["surfaces"], data["norm"], data["points_3d"], data["num_surfaces"])
+    data["depth_extend_distances"] = create_depth_extend_distance_matrix(data)/1000
+    data["depth_extend_distance_ratio"] = calc_depth_extend_to_depth_extend_distance_ratio(data)
 
-def find_optimal_surface_joins(data):
+def find_optimal_surface_joins_from_annotation(data):
     annotation, surfaces, num_surfaces, num_boxes = data["annotation"], data["surfaces"], data["num_surfaces"], data["num_bboxes"]
     num_annotations = np.max(annotation)
     annotation_counter = np.zeros((num_surfaces, num_annotations+1))
@@ -689,11 +703,11 @@ def find_optimal_surface_joins(data):
     Y = np.pad(np.stack([Y_1, Y_2], axis=0), ((0, 0), (0, num_boxes), (0, num_boxes)))
     return np.asarray([Y[:, 1:, 1:]])
 
-def get_position_and_occlusion_infos(data):
+def get_position_and_occlusion_info(data):
     avg_positions, patch_points, surfaces, norm_image, num_surfaces = data["avg_pos"], data["patch_points"], data["surfaces"], data["norm"], data["num_surfaces"]
     input = determine_occlusion_line_points(np.ones((num_surfaces, num_surfaces)), patch_points, avg_positions, num_surfaces)
     nearest_points_for_occlusion = calculate_nearest_points(*input)
-    join_matrix, close_matrix, closest_points = determine_occlusion_candidates_and_connection_infos(nearest_points_for_occlusion, data)
+    join_matrix, close_matrix, closest_points = determine_occlusion_candidates_and_connection_info(nearest_points_for_occlusion, data)
     return join_matrix, close_matrix, closest_points
 
 def determine_convexly_connected_surfaces(candidates, data):
@@ -717,7 +731,7 @@ def prepare_border_centers(neighbors, border_centers):
 def calculate_pairwise_similarity_features_for_surfaces(data, models):
     color_similarity_model, angle_similarity_model, texture_model, object_detector = models[:4]
 
-    ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
+    extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
     candidates = {"convexity": np.ones((data["num_surfaces"], data["num_surfaces"]))}
     data["sim_color"] = color_similarity_model(data["hist_color"])
@@ -735,15 +749,16 @@ def calculate_pairwise_similarity_features_for_surfaces(data, models):
     data["bbox_crf_matrix"] = create_bbox_CRF_matrix(data["bbox_overlap"])
     data["bbox_similarity_matrix"] = create_bbox_similarity_matrix_from_box_surface_overlap(data["bbox_overlap"], data["bboxes"])
     data["num_bboxes"] = np.shape(data["bbox_overlap"])[0]
-    data["occlusion_mat"], data["close_mat"], data["closest_points"] = get_position_and_occlusion_infos(data)
+    data["occlusion_mat"], data["close_mat"], data["closest_points"] = get_position_and_occlusion_info(data)
     data["close_mat"][data["neighborhood_mat"] == 1] = 0
-    data["distances"] = np.sqrt(np.sum(np.square(data["closest_points"] - np.swapaxes(data["closest_points"], axis1=0, axis2=1)), axis=-1))/500
-    data["depth_extend_distances"] = create_depth_extend_distance_matrix(data)/1000
+    data["distances"] = np.sqrt(np.sum(np.square(data["closest_points"] - np.swapaxes(data["closest_points"], axis1=0, axis2=1)), axis=-1)) / 500
 
 def create_similarity_feature_matrix(data):
     keys = ["bbox_similarity_matrix", "sim_texture", "sim_color", "sim_angle", "convex", "coplanarity", "neighborhood_mat",
-            "concave", "distances", "close_mat", "occlusion_mat", "depth_extend_distances", "same_plane_type", "both_curved"]
+            "concave", "distances", "close_mat", "occlusion_mat", "depth_extend_distances", "same_plane_type", "both_curved"]#, "depth_extend_distance_ratio"]
     matrix = np.stack([data[key][1:,1:] for key in keys], axis=-1)
+    #matrix[:, :, 11] = matrix[:, :, 11] / 1000
+    #matrix[:, : , 8] = matrix[:, : , 8] / 500
     return matrix
 
 @njit()
@@ -770,11 +785,3 @@ def determine_disconnected_join_candidates(relabeling, candidates, data):
     closest_points = calculate_nearest_points(*input)
     join_matrix, new_surfaces = determine_occlusion(candidates_all, candidates, closest_points, relabeling, data)
     return join_matrix, new_surfaces
-
-def create_surfaces_from_crf_output(prediction, surfaces):
-    max_vals = np.argmax(prediction, axis=-1)
-    new_surfaces = surfaces.copy()
-    for i in range(len(max_vals)):
-        if max_vals[i] != i:
-            new_surfaces[new_surfaces == i+1] = max_vals[i]+1
-    return new_surfaces

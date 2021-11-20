@@ -1,11 +1,14 @@
 import gc
 import pickle
 
+import keras.losses
 import numpy as np
+import tensorflow as tf
+from tensorflow.keras import Model, regularizers, layers, optimizers, initializers
 
+import plot_image
 from image_processing_models_GPU import normals_and_log_depth_model_GPU, get_angle_arrays, Counts,\
-    gaussian_filter_with_depth_factor_model_GPU, tf, layers, Variable, Variable2, Model, Components, print_tensor
-from tensorflow.keras import optimizers, regularizers
+    gaussian_filter_with_depth_factor_model_GPU, Variable, Variable2, Components
 from load_images import *
 from standard_values import *
 from plot_image import *
@@ -14,19 +17,29 @@ from numpy.lib.stride_tricks import sliding_window_view
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures
 
-variable_names = ["w_1", "w_2", "w_3", "theta_1_1", "theta_1_2", "theta_2_1", "theta_2_2", "theta_2_3", "theta_3_1", "theta_3_2", "theta_3_3", "weight", "dense_1", "dense_2"]
 similarity_normalizers = [6, 2, 1/50, 1/40]
 gauss_CRF_parameters = list(np.reshape([0.8, 0.8, 1.5, 1 / 80, 10000.0, 1 / 100, 10000.0, 1 / 200, 1 / 100, 10000.0, 20.0, 0.01], (12, 1, 1)))
 LR_CRF_parameters = [0.01, 15000]
 standard_kernel_size = 7
 div_x, div_y = 4, 4
 
+def get_GPU_models(mode="LR", kernel_size=standard_kernel_size):
+    size_x, size_y = int(width / div_x), int(height / div_y)
+    return gaussian_filter_with_depth_factor_model_GPU(), \
+           find_surfaces_model_GPU(), \
+           normals_and_log_depth_model_GPU(), \
+           conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x) if mode == "LR" else \
+           conv_crf_Gauss(*load_Gauss_parameters(), kernel_size, size_y, size_x)
+
 @njit()
-def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
+def extract_training_samples(diffs, annotation_windows, annotation_centrals, window, w, surface_patches):
     inputs_0 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     inputs_1 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     for i_1 in range(np.shape(diffs)[0]):
         for i_2 in range(np.shape(diffs)[1]):
+            #if surface_patches[i_1][i_2] != 0:
+            #    if np.random.rand() > 0.1:
+            #        continue
             if annotation_centrals[i_1, i_2] == -1:
                 continue
             for i_3 in range(window + 1):
@@ -35,15 +48,15 @@ def extract_samples(diffs, annotation_windows, annotation_centrals, window, w):
                         continue
                     r = np.random.rand()
                     if annotation_windows[i_1, i_2, i_3, i_4] == annotation_centrals[i_1, i_2]:
-                        if r < 0.004 and annotation_centrals[i_1, i_2] > 0:
+                        if r < 0.006 and annotation_centrals[i_1, i_2] > 0:
                             inputs_1.append(diffs[i_1, i_2, i_3, i_4])
-                    elif r < 0.04:
+                    elif r < 0.06:
                         inputs_0.append(diffs[i_1, i_2, i_3, i_4])
     del inputs_0[0]
     del inputs_1[0]
     return inputs_0, inputs_1
 
-def create_dataset(window=7):
+def create_training_dataset(window=7):
     w = 2*window + 1
     pos_diffs = np.sqrt(np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1)) * similarity_normalizers[3]
 
@@ -54,31 +67,35 @@ def create_dataset(window=7):
     inputs_0 = []
     inputs_1 = []
     save_index = 0
-    for index in train_indices:
+    for count_index in range(len(train_indices)):
+        index = train_indices[count_index]
         data = load_image_and_surface_information(index)
         rgb_diffs = differences(sliding_window(data["rgb"])) * similarity_normalizers[2]
         angle_diffs = differences(sliding_window(data["angles"])) * similarity_normalizers[1]
 
         depth_windows = sliding_window(data["depth"])
         depth_central = central_element(depth_windows)
-        depth_diffs = np.abs((depth_windows - depth_central) / depth_central)  * similarity_normalizers[0]
+        depth_diffs = np.abs((depth_windows - depth_central) / depth_central) * similarity_normalizers[0]
         depth_diffs[data["depth"][window:-window, window:-window] == 0] = 0
 
         annotation = data["annotation"].copy().astype("int32")
         annotation[data["depth"] == 0] = -1
         annotation_windows = sliding_window(annotation)
 
+        surface_patches = data["patches"]
+
         diffs = np.stack([depth_diffs, angle_diffs, rgb_diffs, np.broadcast_to(pos_diffs, np.shape(angle_diffs))], axis=-1)
-        in_0, in_1 = extract_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w)
+        in_0, in_1 = extract_training_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w, surface_patches)
         inputs_0.extend(in_0)
         inputs_1.extend(in_1)
-        print(len(inputs_0), len(inputs_1))
-        if index > 0 and index%10 == 0 or index == train_indices[-1]:
+        print(len(inputs_0), len(inputs_1), count_index % 10)
+        if (count_index > 0 and count_index%10 == 0) or index == train_indices[-1]:
             np.save(f"data/assign_pixels_dataset/inputs_0_{save_index}.npy", np.asarray(inputs_0))
             np.save(f"data/assign_pixels_dataset/inputs_1_{save_index}.npy", np.asarray(inputs_1))
             save_index += 1
             inputs_0 = []
             inputs_1 = []
+            print("SAVED.")
         gc.collect()
     join_datasets()
 
@@ -108,6 +125,9 @@ def train_LR_clf():
     train_Y = np.concatenate([np.zeros(int(len(inputs_0)*0.9)), np.ones(int(len(inputs_1)*0.9))], axis=0)
     test_Y = np.concatenate([np.zeros(len(inputs_0) - int(len(inputs_0)*0.9)), np.ones(len(inputs_1) - int(len(inputs_1)*0.9))], axis=0)
 
+    #train_X[:, 3] = 0
+    #test_X[:, 3] = 0
+
     poly = PolynomialFeatures(degree=1, interaction_only=False, include_bias=False)
     train_X_p = poly.fit_transform(train_X)
     test_X_p = poly.fit_transform(test_X)
@@ -123,11 +143,86 @@ def train_LR_clf():
     clf.fit(np.concatenate([train_X_p, test_X_p], axis=0), np.concatenate([train_Y, test_Y], axis=0))
     print(clf.coef_)
     print(clf.intercept_)
-    pickle.dump(clf, open("parameters/pixel_similarity_clf/clf.pkl", "wb"))
+    pickle.dump(clf, open("parameters/pixel_similarity_clf/clf_2.pkl", "wb"))
+
+def get_Gauss_model():
+    input_in = layers.Input(shape=(4,))
+    input = tf.square(input_in)
+
+    one = tf.square(tf.expand_dims(input[:, 3], axis=-1))
+    two = tf.square(tf.expand_dims(input[:, 0], axis=-1))
+    three = tf.square(tf.expand_dims(input[:, 2], axis=-1))
+    four = tf.square(tf.expand_dims(input[:, 1], axis=-1))
+
+    one = tf.repeat(one, 3, axis=-1)
+    two = tf.repeat(two, 3, axis=-1)
+
+    vars = tf.concat([one, two, three, four], axis=-1)
+    vars = layers.Multiply()([tf.square(Variable2(np.asarray([np.sqrt(x) for x in [100, 100, 100, 100, 100, 100, 100, 5]]), name="theta")(vars)), vars])
+
+    exp_1 = tf.expand_dims(tf.exp(-(vars[:, 0] + vars[:, 3])), axis=-1)
+    exp_2 = tf.expand_dims(tf.exp(-(vars[:, 1] + vars[:, 4] + vars[:, 6])), axis=-1)
+    exp_3 = tf.expand_dims(tf.exp(-(vars[:, 2] + vars[:, 5] + vars[:, 7])), axis=-1)
+    out = layers.Dense(1, activation="sigmoid", kernel_initializer=initializers.constant([1, 1, 1]),
+                       bias_initializer=initializers.constant(-0.8), kernel_regularizer=regularizers.l2(0.03), name="weights")(
+        tf.concat([exp_1, exp_2, exp_3], axis=-1))
+    model = Model(inputs=input_in, outputs=tf.squeeze(out, axis=-1))
+    model.compile(loss=keras.losses.BinaryCrossentropy(), optimizer=optimizers.Adam(learning_rate=8e-3), metrics=[],
+                  run_eagerly=False)
+    return model
+
+def get_LR_model():
+    input = layers.Input(shape=(4,))
+
+    vars = tf.reduce_sum(layers.Multiply()([tf.square(Variable2(np.asarray([1.0, 1.0, 1.0, 1.0]), name="theta")(input)) * tf.constant([-1.0, -1.0, -1.0, 1.0]), input]), axis=-1)
+    out = tf.math.sigmoid(layers.Add()([Variable2([-1.0], name="bias")(vars), vars]))
+
+    model = Model(inputs=input, outputs=out)
+    model.compile(loss=keras.losses.BinaryCrossentropy(), optimizer=optimizers.Adam(learning_rate=8e-3), metrics=[],
+                  run_eagerly=False)
+    model.summary()
+    return model
+
+
+def train_Gauss_clf():
+    inputs_0 = np.load("data/assign_pixels_dataset/inputs_0.npy")
+    inputs_1 = np.load("data/assign_pixels_dataset/inputs_1.npy")
+
+    train_0 = inputs_0[:int(len(inputs_0)*0.9)]
+    train_1 = inputs_1[:int(len(inputs_1)*0.9)]
+    test_0 = inputs_0[int(len(inputs_0) * 0.9):]
+    test_1 = inputs_1[int(len(inputs_1) * 0.9):]
+    train_X = np.concatenate([train_0, train_1], axis=0)
+    test_X = np.concatenate([test_0, test_1], axis=0)
+    train_Y = np.concatenate([np.zeros(int(len(inputs_0)*0.9)), np.ones(int(len(inputs_1)*0.9))], axis=0)
+    test_Y = np.concatenate([np.zeros(len(inputs_0) - int(len(inputs_0)*0.9)), np.ones(len(inputs_1) - int(len(inputs_1)*0.9))], axis=0)
+
+    complete_data = np.concatenate([train_X, test_X], axis=0), np.concatenate([train_Y, test_Y], axis=0)
+
+    clf = get_Gauss_model()
+    clf.fit(*complete_data, shuffle=True, epochs=2, batch_size=128)
+
+    #print(np.sum(np.abs(clf.predict(train_X, batch_size=512)-train_Y))/len(train_Y))
+    #print(np.sum(np.abs(clf.predict(test_X, batch_size=512)-test_Y))/len(test_Y))
+
+    #k1 = clf.predict(train_X_p, batch_size=512)
+    #k2 = clf.predict(test_X_p, batch_size=512)
+
+    parameters = [*[p[0] for p in list(clf.get_layer("weights").weights[0].numpy())], clf.get_layer("weights").weights[1].numpy()[0]]
+    parameters += list(clf.get_layer("theta").weights[0].numpy())
+    print(parameters)
+    pickle.dump(parameters, open("parameters/pixel_similarity_clf/gauss.pkl", "wb"))
 
 def load_pixel_similarity_parameters():
-    clf = pickle.load(open("parameters/pixel_similarity_clf/clf.pkl", "rb"))
-    return clf.coef_, clf.intercept_
+    clf = pickle.load(open("parameters/pixel_similarity_clf/clf_2.pkl", "rb"))
+    return clf.coef_, clf.intercept_ + 11
+
+def load_Gauss_parameters():
+    p = pickle.load(open("parameters/pixel_similarity_clf/gauss.pkl", "rb"))
+    p.append(0.01)
+    p[3] = p[3] + 3
+    p[3] = 0
+    return list(np.reshape(p, (13, 1, 1)))
 
 def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, height=height, width=width, alpha=3, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
     # Find curvature score edges
@@ -190,7 +285,7 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, heig
     model = Model(inputs=depth_image_in, outputs=[pixels, edges])
     return lambda x: model.predict(np.expand_dims(x, axis=0), batch_size=1)
 
-def conv_crf_Gauss(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, theta_2_3, theta_3_1, theta_3_2, theta_3_3, weight, kernel_size, height, width):
+def conv_crf_Gauss(w_1, w_2, w_3, bias, theta_1_1, theta_2_1, theta_3_1, theta_1_2, theta_2_2, theta_3_2, theta_2_3, theta_3_3, weight, kernel_size, height, width):
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
     number_of_surfaces = tf.shape(Q)[-1]
@@ -238,23 +333,24 @@ def conv_crf_Gauss(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, th
     theta_3_2 = tf.repeat(Variable(theta_3_2, name="theta_3_2")(feature_1), repeats=[1], axis=-1)
     theta_3_3 = tf.repeat(Variable(theta_3_3, name="theta_3_3")(feature_1), repeats=[2], axis=-1)
 
-    theta_1 = tf.expand_dims(tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1"), axis=1)
-    theta_2 = tf.expand_dims(tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2"), axis=1)
-    theta_3 = tf.expand_dims(tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3"), axis=1)
+    theta_1 = tf.square(tf.expand_dims(tf.concat([theta_1_1, theta_1_2], axis=-1, name="Theta_1"), axis=1))
+    theta_2 = tf.square(tf.expand_dims(tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2"), axis=1))
+    theta_3 = tf.square(tf.expand_dims(tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3"), axis=1))
 
-    differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), div_1)
+    differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), div_1) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0]])
     similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_1), tf.broadcast_to(theta_1, tf.shape(differences_1))), axis=-1))
 
-    differences_2 = tf.math.divide_no_nan(tf.subtract(windows_f_2, feature_2), div_2)
+    differences_2 = tf.math.divide_no_nan(tf.subtract(windows_f_2, feature_2), div_2) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0], similarity_normalizers[2], similarity_normalizers[2], similarity_normalizers[2]])
     similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_2), tf.broadcast_to(theta_2, tf.shape(differences_2))), axis=-1))
 
-    differences_3 = tf.math.divide_no_nan(tf.subtract(windows_f_3, feature_3), div_3)
+    differences_3 = tf.math.divide_no_nan(tf.subtract(windows_f_3, feature_3), div_3) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0], similarity_normalizers[1], similarity_normalizers[1]])
     similarities_3 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_3), tf.broadcast_to(theta_3, tf.shape(differences_3))), axis=-1))
 
     similarity_sum = layers.Add()([layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
                                    layers.Multiply()([Variable2(w_2, name="w_2")(similarities_2), similarities_2]),
-                                   layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3])])
-    similarity_sum = tf.concat([tf.reshape(similarity_sum, (1, height, width, k*k)), tf.ones((1, height, width, 1))/1000], axis=-1)
+                                   layers.Multiply()([Variable2(w_3, name="w_3")(similarities_3), similarities_3]),
+                                   Variable2(bias, name="bias")(similarities_1)])
+    similarity_sum = tf.concat([tf.reshape(similarity_sum, (1, height, width, k*k)), tf.ones((1, height, width, 1))*0.00005], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(similarity_sum, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
@@ -264,7 +360,7 @@ def conv_crf_Gauss(w_1, w_2, w_3, theta_1_1, theta_1_2, theta_2_1, theta_2_2, th
     output = layers.Softmax()(-add)
 
     model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, val], outputs=output)
-    model.compile(loss=None, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=True)
+    model.compile(loss=None, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=False)
     return model
 
 def conv_crf_LR(LR_weights, LR_bias, weight, auxiliary_weight, kernel_size, height, width):
@@ -318,9 +414,9 @@ def conv_crf_LR(LR_weights, LR_bias, weight, auxiliary_weight, kernel_size, heig
     similarities = tf.reshape(similarities, (1, height, width, k*k, 4))
 
     LR_mult_out = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(similarities), similarities]), axis=-1)
-    LR_out = layers.Activation(activation="sigmoid")(layers.Add()([Variable2(LR_bias, name="LR_bias")(LR_mult_out), LR_mult_out]))
+    LR_out = layers.Add()([Variable2(LR_bias, name="LR_bias")(LR_mult_out), LR_mult_out])
 
-    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))/auxiliary_weight], axis=-1)
+    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))*0.1], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(concat_out, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
@@ -443,33 +539,28 @@ def find_surfaces(models, image_data, mode, kernel_size, plot_result=False, save
         np.save(f"out/{save_index}/edges.npy", data["depth_edges"])
     return data
 
-def get_models(mode="LR", kernel_size=standard_kernel_size):
-    size_x, size_y = int(width / div_x), int(height / div_y)
-    return gaussian_filter_with_depth_factor_model_GPU(), \
-           find_surfaces_model_GPU(), \
-           normals_and_log_depth_model_GPU(), \
-           conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x) if mode == "LR" else \
-           conv_crf_Gauss(*gauss_CRF_parameters, kernel_size, size_y, size_x)
-
-
 def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_kernel_size, save_data=True, plot_result=False, return_results=False):
-    models = get_models(mode, kernel_size)
+    models = get_GPU_models(mode, kernel_size)
     results = []
     for index in image_indices:
         print(index)
         image_data = load_image(index)
-        data = find_surfaces(models, image_data, mode, kernel_size, False, -1 if not save_data else index)
+        data = find_surfaces(models, image_data, mode, kernel_size, plot_result, -1 if not save_data else index)
         if return_results:
             results.append(data)
     if return_results:
         return results
 
-def get_find_surface_function(mode="LR", kernel_size=standard_kernel_size):
-    models = get_models(mode, kernel_size)
+def find_surface_model(mode="LR", kernel_size=standard_kernel_size):
+    models = get_GPU_models(mode, kernel_size)
     return lambda x: find_surfaces(models, x, mode, kernel_size, False, -1)
 
 if __name__ == '__main__':
+    #train_Gauss_clf()
+    #create_training_dataset()
     #train_LR_clf()
     #quit()
-    find_surfaces_for_indices(list(range(105, 111)), mode="LR", plot_result=False, save_data=True)
+    find_surfaces_for_indices(list(range(100, 111)), mode="Gauss", plot_result=False, save_data=True)
+    #find_surfaces_for_indices(test_indices[3:], mode="Gauss", plot_result=True, save_data=True)
+
     quit()
