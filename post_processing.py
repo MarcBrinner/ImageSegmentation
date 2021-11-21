@@ -1,5 +1,5 @@
 import plot_image
-from find_planes_new import *
+from find_planes import *
 
 def apply_CRF(data, CRF):
     size_x, size_y = int(width / div_x), int(height / div_y)
@@ -22,9 +22,9 @@ def apply_CRF(data, CRF):
 def get_postprocessing_model(kernel_size=7):
     size_x, size_y = int(width / div_x), int(height / div_y)
     p = load_Gauss_parameters()
-    p[3][0][0] = p[3][0][0] + 3
+    #p[3][0][0] = p[3][0][0] + 3
     CRF = conv_crf_Gauss(*p, kernel_size, size_y, size_x)
-    return lambda x: x
+    #return lambda x: x
     return lambda x: apply_CRF(x, CRF)
 
 

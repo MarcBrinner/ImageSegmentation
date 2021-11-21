@@ -1,4 +1,4 @@
-import find_planes_new
+import find_planes
 import process_surfaces as ps
 from standard_values import *
 from load_images import *

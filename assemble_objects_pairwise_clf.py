@@ -1,6 +1,7 @@
 import random
 
 import CRF_tools as crf_tools
+import plot_image
 import post_processing
 import standard_values
 import tensorflow as tf
@@ -9,7 +10,7 @@ import process_surfaces as ps
 import numpy as np
 from tensorflow.keras import layers, Model, losses, optimizers, regularizers, initializers
 from plot_image import plot_surfaces
-from find_planes_new import find_surface_model
+from find_planes import find_surface_model
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -238,8 +239,9 @@ def main():
     assemble_objects_for_indices([3, 76, 77], model_type="Pairs CRF")
 
 if __name__ == '__main__':
+    #assemble_objects_for_indices(standard_values.test_indices, model_type="Pairs", clf_type="Forest", plot=True)
     train_pairwise_classifier("Forest")
     quit()
-    create_pairwise_clf_training_set()
-    quit()
-    assemble_objects_for_indices([0], "Pairs CRF", clf_type="Forest")
+    #create_pairwise_clf_training_set()
+    #quit()
+    assemble_objects_for_indices(standard_values.test_indices, "Pairs CRF", clf_type="Forest")

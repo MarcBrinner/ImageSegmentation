@@ -132,6 +132,7 @@ def determine_pixel_counts_and_average_position_for_patches(patches, num_surface
 def swap_values(vec):
     return np.asarray([vec[1], vec[0], vec[2]])
 
+
 @njit()
 def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_point_1, space_point_2, c_1, c_2, points_3d):
     normal_direction = (normal_1 + normal_2) / 2
@@ -212,7 +213,7 @@ def determine_convexity_for_candidates(data, candidates, closest_points):
             above, below = determine_convexity_with_above_and_below_line(np.asarray(normal_1, dtype="float32"), np.asarray(normal_2, dtype="float32"),
                                                                          space_point_1, space_point_2, c_1, c_2, points_3d)
 
-            if (candidates[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*2) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)) or (v1-v2 > -0.04 and above < below * 0.1):
+            if (candidates[i][surface_2] == 1 and v1 - v2 > 0.05 and above > below*1.6) or (v1 - v2 > 0 and below <= max(2, (above + below) * 0.2)):
                 convex[i][surface_2] = 1
                 convex[surface_2][i] = 1
                 direction = c_2 - c_1
@@ -755,7 +756,7 @@ def calculate_pairwise_similarity_features_for_surfaces(data, models):
 
 def create_similarity_feature_matrix(data):
     keys = ["bbox_similarity_matrix", "sim_texture", "sim_color", "sim_angle", "convex", "coplanarity", "neighborhood_mat",
-            "concave", "distances", "close_mat", "occlusion_mat", "depth_extend_distances", "same_plane_type", "both_curved"]#, "depth_extend_distance_ratio"]
+            "concave", "distances", "occlusion_mat", "depth_extend_distances", "same_plane_type", "both_curved", "depth_extend_distance_ratio"]
     matrix = np.stack([data[key][1:,1:] for key in keys], axis=-1)
     #matrix[:, :, 11] = matrix[:, :, 11] / 1000
     #matrix[:, : , 8] = matrix[:, : , 8] / 500

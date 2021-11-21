@@ -42,8 +42,9 @@ def extract_IoU_information(annotation, detected_objects):
     counts_annotations_tiled = np.transpose(np.repeat(count_matrix_annotations, num_detections).reshape((num_annotations, num_detections)))
 
     IoU = overlap_matrix / (counts_annotations_tiled + counts_detections_tiled - overlap_matrix)
-    IoU_max_annotations = np.zeros(num_annotations)
-    for i in range(num_annotations):
+    IoU_max_annotations = np.zeros(num_annotations-1)
+    IoU = IoU[:, 1:]
+    for i in range(num_annotations-1):
         for j in range(num_detections):
             if IoU[j, i] > IoU_max_annotations[i]:
                 IoU_max_annotations[i] = IoU[j, i]

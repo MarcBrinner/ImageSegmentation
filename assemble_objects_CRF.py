@@ -5,7 +5,7 @@ import standard_values
 import numpy as np
 import tensorflow as tf
 import CRF_tools as crf_tools
-from find_planes_new import find_surface_model
+from find_planes import find_surface_model
 from tensorflow.keras import layers, optimizers, Model, regularizers, initializers
 
 variable_names = ["w_1", "w_2", "w_3", "w_4", "w_5", "w_6", "w_7", "w_8", "w_9", "weight"]
