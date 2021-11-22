@@ -95,4 +95,4 @@ def evaluate_model(model_type="Rules", model_args={}):
     print(score)
 
 if __name__ == '__main__':
-    evaluate_model(model_type="Pairs CRF", model_args={"clf_type": "Forest"})
+    evaluate_model(model_type="CRF", model_args={"clf_type": "LR"})

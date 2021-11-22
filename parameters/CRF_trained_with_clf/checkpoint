@@ -1,2 +1,2 @@
-model_checkpoint_path: "Neural.ckpt"
-all_model_checkpoint_paths: "Neural.ckpt"
+model_checkpoint_path: "LR.ckpt"
+all_model_checkpoint_paths: "LR.ckpt"

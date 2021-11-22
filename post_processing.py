@@ -24,7 +24,7 @@ def get_postprocessing_model(kernel_size=7):
     p = load_Gauss_parameters()
     #p[3][0][0] = p[3][0][0] + 3
     CRF = conv_crf_Gauss(*p, kernel_size, size_y, size_x)
-    #return lambda x: x
+    return lambda x: x
     return lambda x: apply_CRF(x, CRF)
 
 

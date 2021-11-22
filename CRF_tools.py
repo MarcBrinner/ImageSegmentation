@@ -67,7 +67,7 @@ def train_CRF(CRF, save_path, pw_clf=None):
     else:
         dataset = tf.data.Dataset.from_generator(gen, output_types=({"potentials": tf.float32, "boxes": tf.float32}, tf.float32))
 
-    CRF.fit(dataset.batch(1), verbose=1, epochs=60)
+    CRF.fit(dataset.batch(1), verbose=1, epochs=25)
     print(CRF.trainable_weights)
     CRF.save_weights(save_path)
 
@@ -88,12 +88,13 @@ def custom_loss_CRF(y_actual, y_predicted):
     prediction_expanded_2 = tf.tile(tf.expand_dims(pred_Q, axis=2), [1, 1, num_labels, 1])
     mult_out = tf.multiply(prediction_expanded_1, prediction_expanded_2)
     sum_out = tf.reduce_sum(mult_out, axis=-1)
+    sum_out = 0.001 + 0.998 * sum_out
 
     label_0_diff = 1 - sum_out
-    label_0_loss = tf.math.log(tf.where(tf.equal(label_0_diff, 0), tf.ones_like(label_0_diff), label_0_diff))
-
-    label_1_loss = tf.math.log(tf.where(tf.equal(sum_out, 0), tf.ones_like(sum_out), sum_out))
-
+    #label_0_loss = tf.math.log(tf.where(tf.equal(label_0_diff, 0), tf.ones_like(label_0_diff), label_0_diff))
+    label_0_loss = tf.math.log(label_0_diff)
+    #label_1_loss = tf.math.log(tf.where(tf.equal(sum_out, 0), tf.ones_like(sum_out), sum_out))
+    label_1_loss = tf.math.log(sum_out)
 
     positive_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(join_matrix, label_1_loss), axis=-1), axis=-1)
     negative_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(not_join_matrix, label_0_loss), axis=-1),axis=-1)
@@ -103,3 +104,6 @@ def custom_loss_CRF(y_actual, y_predicted):
 
     Q_loss = positive_error + negative_error + LR_loss * 5
     return Q_loss
+
+if __name__ == '__main__':
+    create_CRF_training_set()

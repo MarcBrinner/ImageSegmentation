@@ -58,12 +58,14 @@ def mean_field_CRF(feature_processing_model, num_iterations=60, num_features=sta
     boxes_pad = boxes_pad + tf.transpose(boxes_pad, perm=[0, 2, 1])
 
     pairwise_potentials_pred = feature_processing_model(features)
+    pairwise_potentials = pairwise_potentials_pred * 0.99 + 0.005
+    pairwise_potentials = tf.math.log(tf.math.divide_no_nan(pairwise_potentials, 1-pairwise_potentials))
+    pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
+
     initial_Q = pairwise_potentials_pred * (1 - tf.eye(num_surfaces)) + tf.eye(num_surfaces)
     initial_Q = tf.math.divide_no_nan(initial_Q, tf.reduce_sum(initial_Q, axis=-1, keepdims=True))
     initial_Q = tf.pad(initial_Q, [[0, 0], [0, num_boxes], [0, num_boxes]])
 
-    pairwise_potentials = pairwise_potentials_pred - 0.5
-    pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
     if use_boxes:
         pairwise_potentials = pairwise_potentials + boxes_pad
     else:
@@ -102,7 +104,6 @@ def assemble_objects_crf(crf, models, data):
 
     prediction = crf.predict(inputs)
     data["final_surfaces"] = crf_tools.create_surfaces_from_crf_output(prediction[0, -1], data["surfaces"])
-    plot_image.plot_surfaces(data["final_surfaces"])
     return data
 
 def assemble_objects_for_indices(indices=standard_values.test_indices, clf_type="LR", plot=True):
@@ -138,4 +139,4 @@ def main():
     assemble_objects_for_indices([7, 88, 102], clf_type="Neural")
 
 if __name__ == '__main__':
-    train_CRF_wrapper("Neural", use_boxes=True)
+    train_CRF_wrapper("LR", use_boxes=True)

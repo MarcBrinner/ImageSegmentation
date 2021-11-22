@@ -28,7 +28,7 @@ def check_clf_type_and_model_type(model_type, clf_type):
 def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, matrix_1, matrix_2):
     Q_mult = tf.tile(tf.expand_dims(Q, axis=1), [1, num_labels, 1, 1])
     messages = tf.reduce_sum(tf.multiply(tf.multiply(tf.expand_dims(pairwise_potentials, axis=-1), Q_mult), matrix_1), axis=2)
-    compatibility = tf.reduce_sum(tf.multiply(tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, num_labels, 1]), matrix_2), axis=-1)
+    compatibility = tf.reduce_sum(tf.multiply(tf.tile(tf.expand_dims(messages, axis=-2), [1, 1, num_labels, 1]), matrix_2), axis=-1)*0.01
     compatibility = compatibility - tf.reduce_min(compatibility, axis=-1, keepdims=True)
     compatibility = tf.math.divide_no_nan(compatibility, tf.reduce_max(compatibility)) * 15
     new_Q = tf.exp(tf.multiply(unary_potentials, 0.5) - compatibility)
@@ -52,7 +52,8 @@ def mean_field_CRF(num_iterations=60, use_boxes=True):
     boxes_pad = tf.pad(boxes_dense, [[0, 0], [num_surfaces, 0], [0, num_boxes]])
     boxes_pad = boxes_pad + tf.transpose(boxes_pad, perm=[0, 2, 1])
 
-    pairwise_potentials = tf.math.log(tf.math.divide_no_nan(pairwise_potentials_in, 1-pairwise_potentials_in))
+    pairwise_potentials = pairwise_potentials_in * 0.99 + 0.005
+    pairwise_potentials = tf.math.log(tf.math.divide_no_nan(pairwise_potentials, 1-pairwise_potentials))
     pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
 
     if use_boxes:
@@ -187,7 +188,7 @@ def assemble_objects_crf(clf, models, crf, data):
 
     predictions = np.reshape(clf.predict_proba(np.reshape(feature_matrix, (-1, np.shape(feature_matrix)[-1])))[:, 1],
                              (data["num_surfaces"] - 1, data["num_surfaces"] - 1))
-    predictions = predictions * 0.99 + 0.005
+  #  predictions = predictions * 0.99 + 0.005
     crf_out = crf.predict([np.asarray([x]) for x in [predictions, data["bbox_overlap"][:, 1:]]])
     data["final_surfaces"] = crf_tools.create_surfaces_from_crf_output(crf_out[0, -1], data["surfaces"])
     return data
@@ -239,9 +240,11 @@ def main():
     assemble_objects_for_indices([3, 76, 77], model_type="Pairs CRF")
 
 if __name__ == '__main__':
+    train_CRF_wrapper("Forest")
+    quit()
     #assemble_objects_for_indices(standard_values.test_indices, model_type="Pairs", clf_type="Forest", plot=True)
-    train_pairwise_classifier("Forest")
+    train_pairwise_classifier("LR")
     quit()
     #create_pairwise_clf_training_set()
     #quit()
-    assemble_objects_for_indices(standard_values.test_indices, "Pairs CRF", clf_type="Forest")
+    assemble_objects_for_indices(standard_values.test_indices[1:], "Pairs CRF", clf_type="Forest")
