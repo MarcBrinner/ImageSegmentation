@@ -22,18 +22,23 @@ def load_image(index):
 
 
 def load_image_and_surface_information(index):
-    data = {}
-    data["depth"], data["rgb"], data["annotation"] = load_image(index)
-    data["lab"] = utils.rgb_to_Lab(data["rgb"])
-    data["surfaces"] = np.load(f"out/{index}/Q.npy")
-    data["depth"] = np.load(f"out/{index}/depth.npy")
-    data["angles"] = np.load(f"out/{index}/angles.npy")
-    data["patches"] = np.load(f"out/{index}/patches.npy")
-    data["points_3d"] = np.load(f"out/{index}/points.npy")
-    data["depth_edges"] = np.load(f"out/{index}/edges.npy")
-    data["vectors"] = np.load(f"out/{index}/vectors.npy")
-    data["num_surfaces"] = int(np.max(data["surfaces"]) + 1)
-    return data
+    try:
+        data = {}
+        data["depth"], data["rgb"], data["annotation"] = load_image(index)
+        data["lab"] = utils.rgb_to_Lab(data["rgb"])
+        data["surfaces"] = np.load(f"out/{index}/Q.npy")
+        data["depth"] = np.load(f"out/{index}/depth.npy")
+        data["angles"] = np.load(f"out/{index}/angles.npy")
+        data["patches"] = np.load(f"out/{index}/patches.npy")
+        data["points_3d"] = np.load(f"out/{index}/points.npy")
+        data["depth_edges"] = np.load(f"out/{index}/edges.npy")
+        data["vectors"] = np.load(f"out/{index}/vectors.npy")
+        data["num_surfaces"] = int(np.max(data["surfaces"]) + 1)
+        return data
+    except:
+        print("The index is not available or the surfaces for this image have not detected yet."
+              "Try to use the methods in \"find_surfaces.py\" first to detect and save surface data, so that this data can subsequently be loaded.")
+        quit()
 
 def load_mrcnn_predictions(image_data, index):
     data = {}

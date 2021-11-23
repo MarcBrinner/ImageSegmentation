@@ -7,10 +7,10 @@ import tensorflow as tf
 from tensorflow.keras import Model, regularizers, layers, optimizers, initializers
 
 import plot_image
-from image_processing_models_GPU import normals_and_log_depth_model_GPU, get_angle_arrays, Counts,\
+from image_processing_models_GPU import normals_model_GPU, get_angle_arrays, Counts,\
     gaussian_filter_with_depth_factor_model_GPU, Variable, Variable2, Components
 from load_images import *
-from standard_values import *
+from config import *
 from plot_image import *
 from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
@@ -27,12 +27,12 @@ def get_GPU_models(mode="LR", kernel_size=standard_kernel_size):
     size_x, size_y = int(width / div_x), int(height / div_y)
     return gaussian_filter_with_depth_factor_model_GPU(), \
            find_surfaces_model_GPU(), \
-           normals_and_log_depth_model_GPU(), \
+           normals_model_GPU(), \
            conv_crf_LR(*load_pixel_similarity_parameters(), *LR_CRF_parameters, kernel_size, size_y, size_x) if mode == "LR" else \
            conv_crf_Gauss(*load_Gauss_parameters(), kernel_size, size_y, size_x)
 
 @njit()
-def extract_training_samples(diffs, annotation_windows, annotation_centrals, window, w, surface_patches):
+def extract_training_samples(diffs, annotation_windows, annotation_centrals, window, w):
     inputs_0 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     inputs_1 = [np.asarray([0.0, 0.0, 0.0, 0.0])]
     for i_1 in range(np.shape(diffs)[0]):
@@ -79,10 +79,8 @@ def create_training_dataset(window=7):
         annotation[data["depth"] == 0] = -1
         annotation_windows = sliding_window(annotation)
 
-        surface_patches = data["patches"]
-
         diffs = np.stack([depth_diffs, angle_diffs, rgb_diffs, np.broadcast_to(pos_diffs, np.shape(angle_diffs))], axis=-1)
-        in_0, in_1 = extract_training_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w, surface_patches)
+        in_0, in_1 = extract_training_samples(diffs, annotation_windows, annotation[window:-window, window:-window], window, w)
         inputs_0.extend(in_0)
         inputs_1.extend(in_1)
         print(len(inputs_0), len(inputs_1), count_index % 10)
@@ -122,14 +120,9 @@ def train_LR_clf():
     train_Y = np.concatenate([np.zeros(int(len(inputs_0)*0.9)), np.ones(int(len(inputs_1)*0.9))], axis=0)
     test_Y = np.concatenate([np.zeros(len(inputs_0) - int(len(inputs_0)*0.9)), np.ones(len(inputs_1) - int(len(inputs_1)*0.9))], axis=0)
 
-    #train_X[:, 3] = 0
-    #test_X[:, 3] = 0
-
     poly = PolynomialFeatures(degree=1, interaction_only=False, include_bias=False)
     train_X_p = poly.fit_transform(train_X)
     test_X_p = poly.fit_transform(test_X)
-    print(np.shape(train_X_p))
-    print(np.shape(test_X_p))
 
     clf = LogisticRegression(max_iter=1000, penalty="l2")
     clf.fit(train_X_p, train_Y)
@@ -198,12 +191,6 @@ def train_Gauss_clf():
 
     clf = get_Gauss_model()
     clf.fit(*complete_data, shuffle=True, epochs=2, batch_size=128)
-
-    #print(np.sum(np.abs(clf.predict(train_X, batch_size=512)-train_Y))/len(train_Y))
-    #print(np.sum(np.abs(clf.predict(test_X, batch_size=512)-test_Y))/len(test_Y))
-
-    #k1 = clf.predict(train_X_p, batch_size=512)
-    #k2 = clf.predict(test_X_p, batch_size=512)
 
     parameters = [*[p[0] for p in list(clf.get_layer("weights").weights[0].numpy())], clf.get_layer("weights").weights[1].numpy()[0]]
     parameters += list(clf.get_layer("theta").weights[0].numpy())
@@ -413,7 +400,7 @@ def conv_crf_LR(LR_weights, LR_bias, weight, auxiliary_weight, kernel_size, heig
     LR_mult_out = tf.reduce_sum(layers.Multiply()([Variable2(LR_weights, name="LR_weights")(similarities), similarities]), axis=-1)
     LR_out = layers.Add()([Variable2(LR_bias, name="LR_bias")(LR_mult_out), LR_mult_out])
 
-    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))*0.1], axis=-1)
+    concat_out = tf.concat([LR_out, tf.ones((1, height, width, 1))*auxiliary_weight], axis=-1)
     windows_Q = tf.concat([tf.reshape(windows_Q, (1, height, width, k*k, number_of_surfaces)), tf.tile(val, [1, height, width, 1, 1])], axis=-2)
     messages = tf.reduce_sum(tf.multiply(tf.broadcast_to(tf.expand_dims(concat_out, axis=-1), tf.shape(windows_Q)), windows_Q), axis=-2)
 
@@ -495,7 +482,7 @@ def find_surfaces(models, image_data, mode, kernel_size, plot_result=False, save
     data["depth"], data["rgb"], data["annotation"] = image_data
     smoothed_depth = smoothing_model(data["depth"], grid)
 
-    log_depth, data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
+    data["angles"], data["vectors"], data["points_3d"] = normals_and_log_depth(smoothed_depth)
     if mode == "LR":
         features = [np.expand_dims(data["depth"], axis=-1), data["angles"], data["rgb"], grid]
     else:

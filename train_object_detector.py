@@ -15,8 +15,8 @@ import numpy as np
 import tensorflow as tf
 import plot_image
 import core.utils as utils
-import standard_values
-from standard_values import *
+import config
+from config import *
 from core.dataset import Dataset
 from core.yolov3 import YOLOv3, decode, compute_loss
 from core.config import cfg
@@ -85,7 +85,7 @@ def train(load_trained_weights=False):
 def create_annotation_files():
     annotation_file_string = ""
     for set_type in ["train", "test"]:
-        for index in standard_values.train_indices if set_type == "train" else standard_values.test_indices:
+        for index in config.train_indices if set_type == "train" else config.test_indices:
             print(index)
             annotation_string = f"data/RGB/{index}.png "
             annotation = np.asarray(Image.open(f"data/annotation/{index}.png"))

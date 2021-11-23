@@ -1,10 +1,6 @@
 import numba
 import warnings
-
-import numpy as np
-
-import plot_image
-from standard_values import *
+from config import *
 from numba import njit
 from load_images import *
 

@@ -1,5 +1,5 @@
 import plot_image
-from find_planes import *
+from find_surfaces import *
 
 def apply_CRF(data, CRF):
     size_x, size_y = int(width / div_x), int(height / div_y)
@@ -19,12 +19,13 @@ def apply_CRF(data, CRF):
     #plot_image.plot_surfaces(data["final_surfaces"])
     return data
 
-def get_postprocessing_model(kernel_size=7):
-    size_x, size_y = int(width / div_x), int(height / div_y)
-    p = load_Gauss_parameters()
-    #p[3][0][0] = p[3][0][0] + 3
-    CRF = conv_crf_Gauss(*p, kernel_size, size_y, size_x)
-    return lambda x: x
-    return lambda x: apply_CRF(x, CRF)
+def get_postprocessing_model(kernel_size=7, do_post_processing=True):
+    if do_post_processing:
+        size_x, size_y = int(width / div_x), int(height / div_y)
+        p = load_Gauss_parameters()
+        CRF = conv_crf_Gauss(*p, kernel_size, size_y, size_x)
+        return lambda x: apply_CRF(x, CRF)
+    else:
+        return lambda x: x
 
 

@@ -1,6 +1,7 @@
-import find_planes
+import find_surfaces
+import post_processing
 import process_surfaces as ps
-from standard_values import *
+from config import *
 from load_images import *
 from plot_image import plot_surfaces
 from image_processing_models_GPU import extract_texture_function, chi_squared_distances_model_2D
@@ -121,7 +122,7 @@ def remove_concave_connections(join_matrices, data):
 
     return final_join_matrix
 
-def assemble_surfaces(data, models):
+def assemble_objects(data, models):
     color_similarity_model, angle_similarity_model, texture_model = models
     #plot_surfaces(data["surfaces"])
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
@@ -147,23 +148,26 @@ def assemble_surfaces(data, models):
     data["final_surfaces"] = surfaces
     return data
 
-def assemble_objects_for_indices(indices, plot=True):
+def assemble_objects_for_indices(indices, do_post_processing=True, plot=True):
     models = get_GPU_models()
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing)
     results = []
     for index in range(len(indices)):
         print(index)
         data = load_image_and_surface_information(indices[index])
-        data = assemble_surfaces(data, models)
+        data = assemble_objects(data, models)
+        data = post_processing_model(data)
 
         if plot:
             plot_surfaces(data["final_surfaces"])
         results.append(data["final_surfaces"])
     return results
 
-def get_full_prediction_model():
-    surface_model = find_planes.find_surface_model()
+def get_full_prediction_model(do_post_processing=True):
+    surface_model = find_surfaces.find_surface_model()
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing)
     assemble_surface_models = get_GPU_models()
-    return lambda x: assemble_surfaces(surface_model(x), assemble_surface_models)
+    return lambda x, y: post_processing_model(assemble_objects(load_image_and_surface_information(y), assemble_surface_models))
 
 def main():
     assemble_objects_for_indices(test_indices)

@@ -7,7 +7,7 @@ import assemble_objects_rules
 import load_images
 import plot_image
 import matplotlib.pyplot as plt
-from standard_values import *
+from config import *
 from load_images import load_image
 from numba import njit
 from tqdm import tqdm
@@ -73,10 +73,9 @@ def evaluate_Avg_max_IoU(evaluation_inputs): # Alias Jaccard Index
 def evaluate_model(model_type="Rules", model_args={}):
     if model_type == "Rules":
         model = assemble_objects_rules.get_full_prediction_model()
-    elif "Pairs" in model_type:
-        model_args["model_type"] = model_type
+    elif model_type == "Pairs":
         model = assemble_objects_pairwise_clf.get_full_prediction_model(**model_args)
-    elif "CRF" in model_type:
+    elif model_type == "CRF":
         model_args["model_type"] = model_type
         model = assemble_objects_CRF.get_full_prediction_model(**model_args)
     elif model_type == "mrcnn":

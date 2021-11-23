@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import tensorflow_addons as tfa
-from standard_values import *
+from config import *
 from tensorflow.keras import layers, Model, initializers
 
 def print_tensor(input):
@@ -85,7 +85,7 @@ class Calc_Angles(layers.Layer):
 
 class Depth_Cutoff(layers.Layer):
     def call(self, input, middle):
-        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.subtract(y, y[middle])), 0.3), tf.zeros_like(y), tf.ones_like(y)), x), input)
+        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.math.divide_no_nan(y-y[middle], y[middle])), 0.2), tf.zeros_like(y), tf.ones_like(y)), x), input)
 
 class Gauss_Weights(layers.Layer):
     def call(self, input, middle, sigma, mask):
@@ -134,18 +134,6 @@ def gaussian_filter_with_depth_factor_model_GPU(size=3, height=height, width=wid
     model = Model(inputs=[depth_image, indices], outputs=[out])
     return lambda x, y:  model.predict([np.asarray([x]), np.asarray([y])])
 
-def convert_to_log_depth(depth_image):
-    log_image = tf.math.log(depth_image)
-    min = tf.reduce_min(tf.where(tf.math.is_inf(log_image), np.inf, log_image))
-    max = tf.reduce_max(log_image)
-
-    log_image = log_image - min
-    log_image = tf.math.divide_no_nan(log_image, max-min)
-    log_image = (tf.ones_like(log_image) - log_image) * 0.85 + 0.15
-
-    log_image = tf.where(tf.math.is_inf(log_image), 0.0, log_image)
-    return log_image
-
 def get_angle_arrays(height=height, width=width):
     x_val = tf.constant(viewing_angle_x / 2, dtype="float32")
     y_val = tf.constant(viewing_angle_y / 2, dtype="float32")
@@ -160,18 +148,13 @@ def get_angle_arrays(height=height, width=width):
     angle_values_y = tf.math.tan(y_array)
     return angle_values_x, angle_values_y
 
-def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
+def normals_model_GPU(pool_size=3, height=height, width=width):
     p = pool_size*2+1
 
     angle_values_x, angle_values_y = get_angle_arrays()
 
     depth_image = layers.Input(batch_shape=(height, width), dtype=tf.float32)
     depth_image_expanded = tf.expand_dims(depth_image, axis=-1)
-
-    log_image = tf.expand_dims(convert_to_log_depth(depth_image_expanded), axis=0)
-
-    #smoothed_depth = uniform_filter_with_depth_cutoff(depth_image_expanded, log_image, [1, p, p, 1], int((p**2-1)/2), 1, p**2)
-    #smoothed_log = uniform_filter_with_depth_cutoff(log_image, log_image, [1, p, p, 1], int((p**2-1)/2), 1, p**2)
 
     x_array = angle_values_x*depth_image_expanded
     y_array = angle_values_y*depth_image_expanded
@@ -193,9 +176,9 @@ def normals_and_log_depth_model_GPU(pool_size=3, height=height, width=width):
     normals = tf.math.divide_no_nan(vectors, tf.broadcast_to(norm, tf.shape(vectors)))
 
     angles = Calc_Angles()(normals)
-    smoothed_angles = uniform_filter_with_depth_cutoff(tf.expand_dims(angles, axis=0), log_image, [1, p, p, 1], int((p**2-1)/2), 2, p**2)
+    smoothed_angles = uniform_filter_with_depth_cutoff(tf.expand_dims(angles, axis=0), depth_image, [1, p, p, 1], int((p**2-1)/2), 2, p**2)
 
-    model = Model(inputs=depth_image, outputs=[tf.squeeze(tf.squeeze(log_image, axis=-1), axis=0), smoothed_angles, normals, points_in_space])
+    model = Model(inputs=depth_image, outputs=[smoothed_angles, normals, points_in_space])
     return lambda image: model.predict(image, batch_size=height)
 
 def extract_texture_function():

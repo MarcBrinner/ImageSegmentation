@@ -7,7 +7,7 @@ import process_surfaces as ps
 from tensorflow.keras import layers, losses
 from image_processing_models_GPU import chi_squared_distances_model_2D, extract_texture_function
 from detect_objects import get_object_detector
-from standard_values import *
+from config import *
 
 def get_GPU_models():
     return chi_squared_distances_model_2D((10, 10), (4, 4)), \
