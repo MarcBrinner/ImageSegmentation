@@ -12,10 +12,10 @@ from load_images import load_image
 from numba import njit
 from tqdm import tqdm
 
-IoU_thresholds = [0.5, 0.75, 0.9]
 min_annotation_overlap_threshold = 0.2
 model_types = ["Rules"]
 
+# Calculate the maximum IoU scores for each ground truth object in the image.
 @njit()
 def extract_IoU_information(annotation, detected_objects):
     num_detections = np.max(detected_objects) + 1
@@ -33,10 +33,6 @@ def extract_IoU_information(annotation, detected_objects):
             count_matrix_detections[o] += 1
             count_matrix_annotations[a] += 1
             overlap_matrix[o, a] += 1
-
-    #overlap_matrix = overlap_matrix[1:, 1:]
-    #count_matrix_detections = count_matrix_detections[1:]
-    #count_matrix_annotations = count_matrix_annotations[1:]
 
     counts_detections_tiled = np.repeat(count_matrix_detections, num_annotations).reshape((num_detections, num_annotations))
     counts_annotations_tiled = np.transpose(np.repeat(count_matrix_annotations, num_detections).reshape((num_annotations, num_detections)))
@@ -61,7 +57,8 @@ def extract_IoU_information(annotation, detected_objects):
     num_valid_annotations = np.sum(valid_annotations)
     return num_valid_annotations, num_valid_detections, IoU_max_annotations
 
-def evaluate_Avg_max_IoU(evaluation_inputs): # Alias Jaccard Index
+# Create the average IoU scores for the set of given ground truth annotations and detected objects
+def evaluate_Avg_max_IoU(evaluation_inputs):
     IoU_sum = 0
     for annotation, detected_objects in evaluation_inputs:
         num_valid_annotations, num_valid_detections, IoU_values = extract_IoU_information(annotation.astype("int64"), detected_objects)
@@ -72,26 +69,29 @@ def evaluate_Avg_max_IoU(evaluation_inputs): # Alias Jaccard Index
 
 def evaluate_model(model_type="Rules", model_args={}):
     if model_type == "Rules":
-        model = assemble_objects_rules.get_full_prediction_model()
+        model = assemble_objects_rules.get_full_prediction_model(do_post_processing=model_args["do_post_processing"])
     elif model_type == "Pairs":
         model = assemble_objects_pairwise_clf.get_full_prediction_model(**model_args)
     elif model_type == "CRF":
         model_args["model_type"] = model_type
-        model = assemble_objects_CRF.get_full_prediction_model(**model_args)
+        model = assemble_objects_CRF.get_full_prediction_model(use_boxes=model_args["use_boxes"], do_post_processing=model_args["do_post_processing"])
     elif model_type == "mrcnn":
         model = load_images.load_mrcnn_predictions
+    elif model_type == "Andre":
+        model = load_images.load_andre_predictions
     else:
         print("Model type not recognized.")
         quit()
 
     evaluation_inputs = []
+
     for index in tqdm(test_indices):
         image_data = load_image(index)
-        prediction = model(image_data, index)
+        prediction = model(image_data)
         evaluation_inputs.append((image_data[2], prediction["final_surfaces"]))
 
     score = evaluate_Avg_max_IoU(evaluation_inputs)
     print(score)
 
 if __name__ == '__main__':
-    evaluate_model(model_type="CRF", model_args={"clf_type": "LR"})
+    evaluate_model(model_type="Pairs", model_args={"clf_type": "Forest", "use_CRF": True, "use_boxes": False, "do_post_processing": True})

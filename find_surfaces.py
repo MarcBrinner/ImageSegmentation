@@ -53,6 +53,7 @@ def extract_training_samples(diffs, annotation_windows, annotation_centrals, win
     del inputs_1[0]
     return inputs_0, inputs_1
 
+# Create the training set for the training of the pixel similarity function.
 def create_training_dataset(window=7):
     w = 2*window + 1
     pos_diffs = np.sqrt(np.sum(np.square(np.stack(np.meshgrid(np.arange(-window, window+1), np.arange(-window, window+1)), axis=-1)), axis=-1)) * similarity_normalizers[3]
@@ -72,7 +73,7 @@ def create_training_dataset(window=7):
 
         depth_windows = sliding_window(data["depth"])
         depth_central = central_element(depth_windows)
-        depth_diffs = np.abs((depth_windows - depth_central) / depth_central) * similarity_normalizers[0]
+        depth_diffs = np.abs((depth_windows - depth_central) / ((depth_central + depth_windows)/2)) * similarity_normalizers[0]
         depth_diffs[data["depth"][window:-window, window:-window] == 0] = 0
 
         annotation = data["annotation"].copy().astype("int32")
@@ -94,6 +95,7 @@ def create_training_dataset(window=7):
         gc.collect()
     join_datasets()
 
+# Helper function in the process of creating the training set for the similarity classifiers.
 def join_datasets():
     load = lambda x, y: np.load(f"data/assign_pixels_dataset/inputs_{x}_{y}.npy")
     save = lambda x, y: np.save(f"data/assign_pixels_dataset/inputs_{x}.npy", y)
@@ -107,6 +109,7 @@ def join_datasets():
             delete(i, j)
         save(i, array)
 
+# Train the logistic regression pixel similarity classifier.
 def train_LR_clf():
     inputs_0 = np.load("data/assign_pixels_dataset/inputs_0.npy")
     inputs_1 = np.load("data/assign_pixels_dataset/inputs_1.npy")
@@ -135,6 +138,7 @@ def train_LR_clf():
     print(clf.intercept_)
     pickle.dump(clf, open("parameters/pixel_similarity_clf/clf_2.pkl", "wb"))
 
+# Create a Gaussian kernel-based pixel similarity function for the use as similarity function in the CRF.
 def get_Gauss_model():
     input_in = layers.Input(shape=(4,))
     input = tf.square(input_in)
@@ -161,6 +165,7 @@ def get_Gauss_model():
                   run_eagerly=False)
     return model
 
+# Create a logistic regression model for the use as similarity function in the CRF.
 def get_LR_model():
     input = layers.Input(shape=(4,))
 
@@ -173,10 +178,20 @@ def get_LR_model():
     model.summary()
     return model
 
-
+# Train the similarity function based on the Gaussian kernels.
 def train_Gauss_clf():
-    inputs_0 = np.load("data/assign_pixels_dataset/inputs_0.npy")
-    inputs_1 = np.load("data/assign_pixels_dataset/inputs_1.npy")
+    try:
+        inputs_0 = np.load("data/assign_pixels_dataset/inputs_0.npy")
+        inputs_1 = np.load("data/assign_pixels_dataset/inputs_1.npy")
+    except:
+        print("No data set found, creating new one...")
+        create_training_dataset()
+        try:
+            inputs_0 = np.load("data/assign_pixels_dataset/inputs_0.npy")
+            inputs_1 = np.load("data/assign_pixels_dataset/inputs_1.npy")
+        except:
+            print("Failed to load data.")
+            quit()
 
     train_0 = inputs_0[:int(len(inputs_0)*0.9)]
     train_1 = inputs_1[:int(len(inputs_1)*0.9)]
@@ -197,10 +212,12 @@ def train_Gauss_clf():
     print(parameters)
     pickle.dump(parameters, open("parameters/pixel_similarity_clf/gauss.pkl", "wb"))
 
+# Load the parameters of the similarity function based on the logistic regression model.
 def load_pixel_similarity_parameters():
     clf = pickle.load(open("parameters/pixel_similarity_clf/clf_2.pkl", "rb"))
-    return clf.coef_, clf.intercept_ + 11
+    return clf.coef_, clf.intercept_ + 4
 
+# Load the parameters of the similarity function based on the Gaussian kernels.
 def load_Gauss_parameters():
     p = pickle.load(open("parameters/pixel_similarity_clf/gauss.pkl", "rb"))
     p.append(0.01)
@@ -208,6 +225,7 @@ def load_Gauss_parameters():
     p[3] = 0
     return list(np.reshape(p, (13, 1, 1)))
 
+# The GPU implementation of the model for detecting smooth surface patches in the depth image.
 def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, height=height, width=width, alpha=3, s1=2, s2=1, n1=11, n2=5, component_threshold=20):
     # Find curvature score edges
     depth_image_in = layers.Input(batch_shape=(1, height, width))
@@ -269,6 +287,7 @@ def find_surfaces_model_GPU(depth=4, threshold=0.007003343675404672 * 10.5, heig
     model = Model(inputs=depth_image_in, outputs=[pixels, edges])
     return lambda x: model.predict(np.expand_dims(x, axis=0), batch_size=1)
 
+# The Gaussian kernel-based CRF model for assigning additional pixels to the given surface patches.
 def conv_crf_Gauss(w_1, w_2, w_3, bias, theta_1_1, theta_2_1, theta_3_1, theta_1_2, theta_2_2, theta_3_2, theta_2_3, theta_3_3, weight, kernel_size, height, width):
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
@@ -321,13 +340,13 @@ def conv_crf_Gauss(w_1, w_2, w_3, bias, theta_1_1, theta_2_1, theta_3_1, theta_1
     theta_2 = tf.square(tf.expand_dims(tf.concat([theta_2_1, theta_2_2, theta_2_3], axis=-1, name="Theta_2"), axis=1))
     theta_3 = tf.square(tf.expand_dims(tf.concat([theta_3_1, theta_3_2, theta_3_3], axis=-1, name="Theta_3"), axis=1))
 
-    differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), div_1) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0]])
+    differences_1 = tf.math.divide_no_nan(tf.subtract(windows_f_1, feature_1), (div_1 + tf.math.pow(windows_f_1, mask_1))/2) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0]])
     similarities_1 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_1), tf.broadcast_to(theta_1, tf.shape(differences_1))), axis=-1))
 
-    differences_2 = tf.math.divide_no_nan(tf.subtract(windows_f_2, feature_2), div_2) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0], similarity_normalizers[2], similarity_normalizers[2], similarity_normalizers[2]])
+    differences_2 = tf.math.divide_no_nan(tf.subtract(windows_f_2, feature_2), (div_2 + tf.math.pow(windows_f_2, mask_2))/2) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0], similarity_normalizers[2], similarity_normalizers[2], similarity_normalizers[2]])
     similarities_2 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_2), tf.broadcast_to(theta_2, tf.shape(differences_2))), axis=-1))
 
-    differences_3 = tf.math.divide_no_nan(tf.subtract(windows_f_3, feature_3), div_3) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0], similarity_normalizers[1], similarity_normalizers[1]])
+    differences_3 = tf.math.divide_no_nan(tf.subtract(windows_f_3, feature_3), (div_3 + tf.math.pow(windows_f_3, mask_3))/2) * tf.constant([similarity_normalizers[3], similarity_normalizers[3], similarity_normalizers[0], similarity_normalizers[1], similarity_normalizers[1]])
     similarities_3 = tf.exp(-tf.reduce_sum(tf.multiply(tf.square(differences_3), tf.broadcast_to(theta_3, tf.shape(differences_3))), axis=-1))
 
     similarity_sum = layers.Add()([layers.Multiply()([Variable2(w_1, name="w_1")(similarities_1), similarities_1]),
@@ -347,6 +366,8 @@ def conv_crf_Gauss(w_1, w_2, w_3, bias, theta_1_1, theta_2_1, theta_3_1, theta_1
     model.compile(loss=None, optimizer=optimizers.Adam(learning_rate=1e-3), metrics=[], run_eagerly=False)
     return model
 
+# A CRF model for detecting complete surfaces given the smaller surface patches. This model was not present in the thesis because
+# the Gaussian kernel model performed better than this one that just uses linear weights on the differences.
 def conv_crf_LR(LR_weights, LR_bias, weight, auxiliary_weight, kernel_size, height, width):
     k = kernel_size*2+1
     Q = layers.Input(shape=(height+2*kernel_size, width+2*kernel_size, None), dtype=tf.float32)
@@ -410,9 +431,9 @@ def conv_crf_LR(LR_weights, LR_bias, weight, auxiliary_weight, kernel_size, heig
     output = layers.Softmax()(-add)
 
     model = Model(inputs=[unary_potentials, Q, features_1, features_2, features_3, features_4, val], outputs=output)
-    #model.run_eagerly = True
     return model
 
+# Create the inputs for the mean field update model.
 def get_inputs(features, unary_potentials, Q, kernel_size, div_x, div_y, size_x, size_y):
     features_pad = [np.pad(f, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]]) for f in features]
     Q = np.pad(Q, [[kernel_size, kernel_size], [kernel_size, kernel_size], [0, 0]])
@@ -462,6 +483,7 @@ def extract_features(depth_image, lab_image, angles, grid):
 
     return (features_1_new, features_2_new, features_3_new)
 
+# Create a single output from the batch-output of the mean field model.
 def assemble_outputs(outputs, div_x, div_y, size_x, size_y, height, width):
     Q = np.zeros((height, width, *np.shape(outputs)[3:]))
 
@@ -523,7 +545,10 @@ def find_surfaces(models, image_data, mode, kernel_size, plot_result=False, save
         np.save(f"out/{save_index}/edges.npy", data["depth_edges"])
     return data
 
-def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_kernel_size, save_data=True, plot_result=False, return_results=False):
+# This method allows detecting the surfaces for the images from the train/test set that correspond to the set of given indices.
+# By using "save_data=True", the output is saved and can be used in other methods to create training sets for the training of classifiers, or
+# to create the segmentations for complete sets of indices.
+def find_surfaces_for_indices(image_indices, mode="Gauss", kernel_size=standard_kernel_size, save_data=True, plot_result=False, return_results=False):
     models = get_GPU_models(mode, kernel_size)
     results = []
     for index in image_indices:
@@ -535,15 +560,10 @@ def find_surfaces_for_indices(image_indices, mode="LR", kernel_size=standard_ker
     if return_results:
         return results
 
-def find_surface_model(mode="LR", kernel_size=standard_kernel_size):
+def find_surface_model(mode="Gauss", kernel_size=standard_kernel_size):
     models = get_GPU_models(mode, kernel_size)
     return lambda x: find_surfaces(models, x, mode, kernel_size, False, -1)
 
 if __name__ == '__main__':
-    #train_Gauss_clf()
-    #create_training_dataset()
-    #train_LR_clf()
-    #quit()
-    find_surfaces_for_indices(list(range(110, 111)), mode="Gauss", plot_result=False, save_data=True)
-    #find_surfaces_for_indices(test_indices[3:], mode="Gauss", plot_result=True, save_data=True)
+    find_surfaces_for_indices(list(range(0, 111)), mode="Gauss", plot_result=False, save_data=True)
     quit()

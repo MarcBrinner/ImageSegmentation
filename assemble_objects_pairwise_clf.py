@@ -15,10 +15,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from load_images import load_image_and_surface_information
-from process_surfaces import find_optimal_surface_joins_from_annotation
+from process_surfaces import find_optimal_surface_links_from_annotation
 
 clf_types = ["LR", "Tree", "Forest", "Neural"]
 
+# Create the training set for the pairwise classifiers to train them outside of the CRF.
 def create_pairwise_clf_training_set():
     models = crf_tools.get_GPU_models()
     inputs = []
@@ -29,15 +30,15 @@ def create_pairwise_clf_training_set():
             data = load_image_and_surface_information(index)
             ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
 
-            Y = find_optimal_surface_joins_from_annotation(data)[0]
-            join_matrix = Y[0][:-data["num_bboxes"], :-data["num_bboxes"]]
-            not_join_matrix = Y[1][:-data["num_bboxes"], :-data["num_bboxes"]]
+            Y = find_optimal_surface_links_from_annotation(data)[0]
+            link_matrix = Y[0][:-data["num_bboxes"], :-data["num_bboxes"]]
+            not_link_matrix = Y[1][:-data["num_bboxes"], :-data["num_bboxes"]]
 
             feature_matrix = ps.create_similarity_feature_matrix(data)
-            index_matrix = (join_matrix + not_join_matrix) == 1
+            index_matrix = (link_matrix + not_link_matrix) == 1
             num_indices = np.sum(index_matrix)
 
-            labels = labels + list(np.ndarray.flatten(join_matrix[index_matrix]))
+            labels = labels + list(np.ndarray.flatten(link_matrix[index_matrix]))
             inputs = inputs + list(np.reshape(feature_matrix[index_matrix], (num_indices, np.shape(feature_matrix)[-1])))
 
         np.save(f"data/assemble_objects_with_clf_datasets/{set_type}_inputs.npy", np.asarray(inputs))
@@ -55,6 +56,7 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
     new_Q = tf.math.divide_no_nan(new_Q, tf.reduce_sum(new_Q, axis=-1, keepdims=True))
     return new_Q
 
+# This function returns the interaction model as tensorflow model.
 def mean_field_CRF(num_iterations=60, use_boxes=True):
     pairwise_potentials_in = layers.Input(shape=(None, None), name="potentials")
     boxes_in = layers.Input(shape=(None, None), name="boxes")
@@ -94,6 +96,7 @@ def mean_field_CRF(num_iterations=60, use_boxes=True):
     model.compile(loss=crf_tools.custom_loss_CRF, optimizer=optimizers.Adam(learning_rate=optimizers.schedules.ExponentialDecay(3e-3, decay_steps=50, decay_rate=0.95)), metrics=[], run_eagerly=False)
     return model
 
+# This function returns the pairwise neural network classifier as tensorflow model.
 def get_nn_clf(num_features=config.num_pairwise_features):
     input = layers.Input(shape=(num_features,))
     d_1 = layers.Dropout(0.1)(layers.Dense(50, kernel_regularizer=regularizers.l2(0.0001), activation="relu", name="dense_1")(input))
@@ -107,10 +110,21 @@ def train_pairwise_classifier(type="LR"):
     if type not in clf_types:
         print("Invalid model type.")
         quit()
-    inputs_train = np.load("data/assemble_objects_with_clf_datasets/train_inputs.npy")
-    labels_train = np.load("data/assemble_objects_with_clf_datasets/train_labels.npy")
-    inputs_test = np.load("data/assemble_objects_with_clf_datasets/test_inputs.npy")
-    labels_test = np.load("data/assemble_objects_with_clf_datasets/test_labels.npy")
+    try:
+        inputs_train = np.load("data/assemble_objects_with_clf_datasets/train_inputs.npy")
+        labels_train = np.load("data/assemble_objects_with_clf_datasets/train_labels.npy")
+        inputs_test = np.load("data/assemble_objects_with_clf_datasets/test_inputs.npy")
+        labels_test = np.load("data/assemble_objects_with_clf_datasets/test_labels.npy")
+    except:
+        create_pairwise_clf_training_set()
+        try:
+            inputs_train = np.load("data/assemble_objects_with_clf_datasets/train_inputs.npy")
+            labels_train = np.load("data/assemble_objects_with_clf_datasets/train_labels.npy")
+            inputs_test = np.load("data/assemble_objects_with_clf_datasets/test_inputs.npy")
+            labels_test = np.load("data/assemble_objects_with_clf_datasets/test_labels.npy")
+        except:
+            print("Failed to load data.")
+            quit()
 
     kwargs = {}
     if type == "LR":
@@ -130,6 +144,7 @@ def train_pairwise_classifier(type="LR"):
     print(np.sum(np.abs(np.round(clf.predict(inputs_train))-labels_train))/len(labels_train))
     print(np.sum(np.abs(np.round(clf.predict(inputs_test))-labels_test))/len(labels_test))
 
+# Evaluate the performance of a pairwise classifier on the training set.
 def evaluate_clf(model_type="Forest"):
     if model_type not in clf_types:
         print("Invalid model type.")
@@ -141,6 +156,76 @@ def evaluate_clf(model_type="Forest"):
     labels_test = np.load("data/assemble_objects_with_clf_datasets/test_labels.npy")
     print(np.sum(np.abs(np.round(clf.predict(inputs_train))-labels_train))/len(labels_train))
     print(np.sum(np.abs(np.round(clf.predict(inputs_test))-labels_test))/len(labels_test))
+
+# Determine the presence of all pairwise links between pairs of surfaces given the CRF output.
+def detect_all_links_from_CRF_output(prediction):
+    max_vals = np.argmax(prediction, axis=-1)
+    links = np.zeros((len(max_vals), len(max_vals)))
+    for i in range(len(max_vals)):
+        for j in range(len(max_vals)):
+            if max_vals[i] == max_vals[j]:
+                links[i, j] = 1
+                links[j, i] = 1
+    return links
+
+# Determine the presence of all pairwise links between pairs of surfaces (including higher-order links) given the pairwise predictions.
+def detect_all_links_from_pairwise_clf_output(link_matrix):
+    num_surfaces = np.shape(link_matrix)[0]
+    labels = np.arange(num_surfaces)
+    for i in range(num_surfaces):
+        for j in range(i + 1, num_surfaces):
+            if link_matrix[i][j] >= 1:
+                l = labels[j]
+                new_l = labels[i]
+                for k in range(num_surfaces):
+                    if labels[k] == l:
+                        labels[k] = new_l
+    links = np.zeros((num_surfaces, num_surfaces))
+    for i in range(num_surfaces):
+        for j in range(num_surfaces):
+            if labels[i] == labels[j]:
+                links[i, j] = 1
+                links[j, i] = 1
+    return links
+
+# Evaluate the performance of the pairwise classifiers on the test set, but including all higher-order predicted links.
+def evaluate_percentages_for_indices(clf_type="Forest"):
+    clf = load_pw_clf(clf_type)
+
+    models = crf_tools.get_GPU_models()
+    crf = mean_field_CRF(num_iterations=60, use_boxes=False)
+
+    correct_crf = 0
+    correct_normal = 0
+    all_crf = 0
+    all_normal = 0
+    for index in config.test_indices:
+        data = load_image_and_surface_information(index)
+
+        data = assemble_objects_crf(clf, models, crf, data)
+        Y = find_optimal_surface_links_from_annotation(data)
+        link_matrix = Y[0][0][:-data["num_bboxes"], :-data["num_bboxes"]]
+        not_link_matrix = Y[0][1][:-data["num_bboxes"], :-data["num_bboxes"]]
+        index_matrix = ((link_matrix + not_link_matrix) == 1).astype("int32")
+
+        crf_prediction = data["crf_predictions"]
+        prediction = (data["predictions"] > 0.5).astype("int32")
+
+        all_c = np.sum(link_matrix)
+
+        correct_crf_c = np.sum(crf_prediction * link_matrix)# + np.sum((1-crf_prediction) * not_link_matrix)
+        correct_normal_c = np.sum(prediction * link_matrix)# + np.sum((1-prediction) * not_link_matrix)
+
+        print(correct_crf_c/all_c, correct_normal_c/all_c)
+
+        correct_crf += correct_crf_c
+        correct_normal += correct_normal_c
+        all_crf += all_c
+        all_normal += all_c
+
+    print("Final:")
+    print(correct_crf / all_crf, 1-correct_crf / all_crf)
+    print(correct_normal / all_normal, 1-correct_normal / all_normal)
 
 def load_pw_clf(type_str):
     if type_str == "Neural":
@@ -158,6 +243,7 @@ def load_pw_clf(type_str):
         clf = pickle.load(open(f"parameters/pairwise_surface_clf/clf_{type_str}.pkl", "rb"))
     return clf
 
+# This function allows training the few parameters of the CRF, that only exist if "use_boxes" is set to True in the interaction model.
 def train_CRF(clf_type="Forest"):
     pw_clf = load_pw_clf(clf_type)
 
@@ -165,30 +251,36 @@ def train_CRF(clf_type="Forest"):
     crf_tools.train_CRF(CRF, f"parameters/CRF_trained_without_clf/{clf_type}.ckpt", pw_clf)
     print(CRF.trainable_weights)
 
+# Assemble object using only the pairwise classifier without interaction model.
 def assemble_objects_with_pairwise_classifier(clf, models, data):
     ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
     feature_matrix = ps.create_similarity_feature_matrix(data)
 
     predictions = clf.predict(np.reshape(feature_matrix, (-1, np.shape(feature_matrix)[-1])))
-    join_matrix = np.zeros((data["num_surfaces"], data["num_surfaces"]))
-    join_matrix[1:, 1:] = np.reshape(predictions, (data["num_surfaces"]-1, data["num_surfaces"]-1))
+    link_matrix = np.zeros((data["num_surfaces"], data["num_surfaces"]))
+    link_matrix[1:, 1:] = np.reshape(predictions, (data["num_surfaces"]-1, data["num_surfaces"]-1))
 
-    data["final_surfaces"], _ = ps.join_surfaces_according_to_join_matrix(join_matrix, data["surfaces"], data["num_surfaces"])
+    data["final_surfaces"], _ = ps.link_surfaces_according_to_link_matrix(link_matrix, data["surfaces"], data["num_surfaces"])
     return data
 
+# Assemble objects using the pairwise classifier in combination with the interaction model.
 def assemble_objects_crf(clf, models, crf, data):
     ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
     feature_matrix = ps.create_similarity_feature_matrix(data)
 
     predictions = np.reshape(clf.predict_proba(np.reshape(feature_matrix, (-1, np.shape(feature_matrix)[-1])))[:, 1],
                              (data["num_surfaces"] - 1, data["num_surfaces"] - 1))
-
+    data["predictions"] = detect_all_links_from_pairwise_clf_output((predictions > 0.5).astype("int32"))
     crf_out = crf.predict([np.asarray([x]) for x in [predictions, data["bbox_overlap"][:, 1:]]])
+    data["crf_predictions"] = detect_all_links_from_CRF_output(crf_out[0, -1])[:data["num_surfaces"] - 1, :data["num_surfaces"] - 1]
     data["final_surfaces"] = crf_tools.create_surfaces_from_crf_output(crf_out[0, -1], data["surfaces"])
     return data
 
-def assemble_objects_for_indices(indices, use_CRF=True, clf_type="Forest", use_boxes=False, plot=True):
+# A method to perform the object assembling operation for a list of indices from the train/test set.
+# To do this, the surfaces need to be already detected and saved previously.
+def assemble_objects_for_indices(indices, use_CRF=True, clf_type="Forest", use_boxes=False, do_post_processing=True, plot=True):
     clf = load_pw_clf(clf_type)
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
 
     models = crf_tools.get_GPU_models()
     if use_CRF:
@@ -197,20 +289,20 @@ def assemble_objects_for_indices(indices, use_CRF=True, clf_type="Forest", use_b
     results = []
     for index in indices:
         data = load_image_and_surface_information(index)
-
         if use_CRF:
-            data = assemble_objects_crf(clf, models, crf, data)
+            data = post_processing_model(assemble_objects_crf(clf, models, crf, data))
         else:
-            data = assemble_objects_with_pairwise_classifier(clf, models, data)
+            data = post_processing_model(assemble_objects_with_pairwise_classifier(clf, models, data))
 
         if plot:
             plot_surfaces(data["final_surfaces"])
         results.append(data["final_surfaces"])
     return results
 
+# Returns a function for segmenting a new image, including the detection of surfaces and post-processing (if wanted).
 def get_full_prediction_model(clf_type="Forest", use_CRF=True, use_boxes=False, do_post_processing=True):
     surface_model = find_surface_model()
-    post_processing_model = post_processing.get_postprocessing_model(do_post_processing)
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
     assemble_surface_models = crf_tools.get_GPU_models()
     clf = load_pw_clf(clf_type)
 
@@ -221,19 +313,9 @@ def get_full_prediction_model(clf_type="Forest", use_CRF=True, use_boxes=False, 
                 CRF.load_weights(f"parameters/CRF_trained_without_clf/{clf_type}.ckpt")
             except:
                 print("No trained parameters found. Using default parameters instead.")
-        return lambda x, y: post_processing_model(assemble_objects_crf(clf, assemble_surface_models, CRF, load_image_and_surface_information(y)))
+        return lambda x, y: post_processing_model(assemble_objects_crf(clf, assemble_surface_models, CRF, surface_model(x)))
     else:
-        return lambda x, y: post_processing_model(assemble_objects_with_pairwise_classifier(clf, assemble_surface_models, load_image_and_surface_information(y)))
-
-def main():
-    assemble_objects_for_indices([3, 76, 77])
+        return lambda x, y: post_processing_model(assemble_objects_with_pairwise_classifier(clf, assemble_surface_models, surface_model(x)))
 
 if __name__ == '__main__':
-    train_CRF("Forest")
-    quit()
-    #assemble_objects_for_indices(standard_values.test_indices, model_type="Pairs", clf_type="Forest", plot=True)
-    train_pairwise_classifier("LR")
-    quit()
-    #create_pairwise_clf_training_set()
-    #quit()
-    assemble_objects_for_indices(config.test_indices[1:])
+    train_pairwise_classifier("Neural")

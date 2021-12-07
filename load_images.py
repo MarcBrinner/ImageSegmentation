@@ -1,8 +1,7 @@
 import numpy as np
 import os
 import re
-
-import plot_image
+import config
 import utils
 from PIL import Image
 
@@ -20,6 +19,13 @@ def load_image(index):
     annotation = Image.open(f"data/annotation/{file}")
     return np.asarray(depth_image), np.asarray(RGB_image), np.asarray(annotation)
 
+def save_depth_image(image):
+    max = np.max(image)
+    new_depth = image / max
+    flip = 1 - new_depth
+    flip[new_depth == 0] = 0
+    image = Image.fromarray(np.asarray((flip - np.min(flip)) / (np.max(flip) - np.min(flip)) * 255, dtype="uint8"))
+    image.save("out.jpg")
 
 def load_image_and_surface_information(index):
     try:
@@ -43,4 +49,22 @@ def load_image_and_surface_information(index):
 def load_mrcnn_predictions(image_data, index):
     data = {}
     data["final_surfaces"] = np.load(f"data/mask_rcnn predictions/{index}.npy").astype("int64")
+    return data
+
+def load_andre_predictions(image_data, index):
+    data = {}
+    array = np.asarray(Image.open(f"data/andre segmentation predictions/{index}.png"))
+    segmentation = np.zeros((config.height, config.width), dtype="int64")
+    assignments = {}
+    num_detections = 0
+    for y in range(config.height):
+        for x in range(config.width):
+            l = tuple(array[y, x])
+            if l in assignments.keys():
+                segmentation[y, x] = assignments[l]
+            else:
+                assignments[l] = num_detections
+                num_detections += 1
+                segmentation[y, x] = assignments[l]
+    data["final_surfaces"] = segmentation
     return data

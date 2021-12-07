@@ -27,3 +27,7 @@ def plot_surfaces(Q, max=False):
         image = np.reshape(Q, (480, 640))
     PLT.imshow(image, cmap='nipy_spectral')
     PLT.show()
+
+def save_image(array):
+    image = Image.fromarray(array.astype("uint8"))
+    image.save("out.png")

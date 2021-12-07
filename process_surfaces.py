@@ -4,6 +4,7 @@ from config import *
 from numba import njit
 from load_images import *
 
+# Remove small sets of pixels that are assigned to a specific surface, but are not connected to it.
 @njit()
 def remove_disconnected_components(surfaces, centroid_indices):
     connected_indices = np.zeros_like(surfaces)
@@ -26,13 +27,13 @@ def remove_disconnected_components(surfaces, centroid_indices):
                 surfaces[i][j] = 0
     return surfaces
 
+# Determine neighboring surfaces, meaning that they are neighboring in three-dimensional space.
 @njit()
 def determine_neighboring_surfaces_and_border_centers(surfaces, depth_edges, num_surfaces):
     height, width = np.shape(surfaces)
     neighbors = np.zeros((num_surfaces, num_surfaces))
     border_centers = np.zeros((num_surfaces, num_surfaces, 2))
     new_surfaces = surfaces.copy() * depth_edges
-    #plot_image.plot_surfaces(new_surfaces)
     for y in range(height):
         for x in range(width):
             if depth_edges[y][x] == 0 or surfaces[y][x] == 0:
@@ -76,6 +77,7 @@ def determine_neighboring_surfaces_and_border_centers(surfaces, depth_edges, num
         neighbors_list.append(current_list)
     return neighbors_list, border_centers
 
+# Determine the centroids of the surfaces, which are taken to be the pixels closest to the average position of all pixels in the 2D image.
 def determine_surface_patch_centroids(data):
     surface_patch_points, average_positions, points_3d = data["patch_points"], data["avg_pos"], data["points_3d"]
     centroids = []
@@ -90,6 +92,7 @@ def determine_surface_patch_centroids(data):
         centroid_indices.append([point[1], point[0]])
     return np.asarray(centroids), centroid_indices
 
+# Get a set of 2D pixel locations for each surface in the image-
 @njit()
 def extract_individual_points_from_surfaces(surface_patches, num_surfaces):
     points = []
@@ -128,7 +131,7 @@ def determine_pixel_counts_and_average_position_for_patches(patches, num_surface
 def swap_values(vec):
     return np.asarray([vec[1], vec[0], vec[2]])
 
-
+# The procedure to check convexity between neighboring surfaces by determining a line between them and performing the procedure described in the thesis.
 @njit()
 def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_point_1, space_point_2, c_1, c_2, points_3d):
     normal_direction = (normal_1 + normal_2) / 2
@@ -154,7 +157,7 @@ def determine_convexity_with_above_and_below_line(normal_1, normal_2, space_poin
             below += 1
     return above, below
 
-
+# Determine the convexity of the connections between pairs of surfaces for the given candidates.
 def determine_convexity_for_candidates(data, candidates, closest_points):
     angles, neighbors, surfaces, points_3d, coplanarity, norm_image, num_surfaces = data["angles"], \
                      data["neighbors"], data["surfaces"],  data["points_3d"], data["coplanarity"], data["norm"], data["num_surfaces"]
@@ -238,6 +241,7 @@ def relabel_surfaces(surfaces, patches):
                 surfaces[y][x] = patches[y][x]
     return surfaces
 
+# Determine color and normal histograms as well as the texture vectors and the average normal direction for each surface.
 @njit()
 def determine_histograms_and_average_normals(lab_image, angle_image, texture_image, surfaces, patches, num_surfaces):
     histograms_color = np.zeros((256, 256, num_surfaces))
@@ -292,6 +296,8 @@ def determine_histograms_and_average_normals(lab_image, angle_image, texture_ima
 
     return histograms_color, histograms_angles, histograms_texture, all_angles_sum
 
+# Determine two points, one on each surface, for given pairs of surfaces, so that the two points are close to each other.
+# This is a heuristic for finding a short line connecting two surfaces in the 2D image.
 def determine_occlusion_line_points(candidates, point_sets, target_points, num_surfaces):
     centroid_inputs = []
     points_inputs = []
@@ -307,6 +313,7 @@ def determine_occlusion_line_points(candidates, point_sets, target_points, num_s
 
     return points_inputs, centroid_inputs
 
+# A heuristic for the distance of two objects in 3D space.
 def calc_depth_extend_distance(i, j, depth_extends):
     d_1 = depth_extends[i]
     d_2 = depth_extends[j]
@@ -321,6 +328,7 @@ def calc_depth_extend_distance(i, j, depth_extends):
     smaller_values[zero_indices == 1] = 0
     return np.max(smaller_values)
 
+# Calculate the min and max values for x, y, z, adn d for each surface.
 @njit()
 def calculate_depth_extend(surfaces, norm_image, points_3d, num_surfaces):
     values = np.zeros((num_surfaces, 4, 2), dtype="float32")
@@ -337,11 +345,12 @@ def calculate_depth_extend(surfaces, norm_image, points_3d, num_surfaces):
             values[s, :, 1] = np.maximum(values[s, :, 1], new_values)
     return values
 
+# Check occlusion between pairs of surfaces.
 def determine_occlusion(candidates_all, candidates, closest_points, relabeling, data):
     candidates_occlusion, candidates_curved = candidates["occlusion"], candidates["curved"]
     surfaces, coplanarity, norm_image, depth_extend, num_surfaces, points_3d, neighbors = \
         data["surfaces"], data["coplanarity"], data["norm"], data["depth_extend"], data["num_surfaces"], data["points_3d"], data["neighbors"]
-    join_matrix = np.zeros((num_surfaces, num_surfaces))
+    link_matrix = np.zeros((num_surfaces, num_surfaces))
     closest_points_array = np.zeros((num_surfaces, num_surfaces, 2), dtype="int32")
     new_surfaces = surfaces.copy()
     number_of_candidates = np.sum(candidates_all, axis=1)
@@ -442,15 +451,15 @@ def determine_occlusion(candidates_all, candidates, closest_points, relabeling, 
                     (abs(index_2 - index_1) > 8 or calc_depth_extend_distance(i, j, depth_extend) > 34):
                 occluded = False
             if occluded:
-                join_matrix[i][j] = 1
-                join_matrix[j][i] = 1
+                link_matrix[i][j] = 1
+                link_matrix[j][i] = 1
 
             for pos1, pos2 in positions:
                 if occluded:
                     new_surfaces[pos2][pos1] = 100
                 else:
                     new_surfaces[pos2][pos1] = 0
-    return join_matrix, new_surfaces
+    return link_matrix, new_surfaces
 
 def determine_even_planes(data):
     angle_histogram, num_surfaces = np.swapaxes(data["hist_angle"], 2, 0), data["num_surfaces"]
@@ -468,6 +477,7 @@ def determine_even_planes(data):
     planes[max >= 3] = 1.0
     return planes
 
+# Determine, which pairs of surfaces are located on the same plane in 3D space.
 @njit()
 def determine_coplanarity(candidates, centroids, average_normals, planes, num_surfaces):
     coplanarity = np.zeros((num_surfaces, num_surfaces))
@@ -488,6 +498,7 @@ def determine_coplanarity(candidates, centroids, average_normals, planes, num_su
                         coplanarity[j][i] = 1
     return coplanarity
 
+# Calculate how much boxes produced by the object detector and surfaces overlap.
 def calc_box_and_surface_overlap(data):
     bboxes, surfaces, num_surfaces = data["bboxes"], data["surfaces"], data["num_surfaces"]
     n_bboxes = np.shape(bboxes)[0]
@@ -510,6 +521,7 @@ def calc_box_and_surface_overlap(data):
     overlap_counter = overlap_counter / np.expand_dims(counts, axis=0)
     return overlap_counter
 
+# Create the scores for the object detector surface similarity feature.
 def create_bbox_similarity_matrix_from_box_surface_overlap(bbox_overlap_matrix, bbox_data):
     confidence_scores = np.array([x[4] for x in bbox_data])
     num_boxes, num_labels = np.shape(bbox_overlap_matrix)
@@ -519,12 +531,14 @@ def create_bbox_similarity_matrix_from_box_surface_overlap(bbox_overlap_matrix, 
     similarity = np.sum(ext_1 * ext_2, axis=-1)
     return similarity
 
+# Create a matrix of pairwise object detection similarity scores.
 def create_bbox_CRF_matrix(bbox_overlap_matrix):
     num_boxes, num_labels = np.shape(bbox_overlap_matrix)
     similarity_matrix = np.zeros((num_boxes + num_labels, num_boxes + num_labels))
     similarity_matrix[num_labels:, :num_labels] = bbox_overlap_matrix
     return similarity_matrix
 
+# Convert a list of neighboring surfaces into a binary neighborhood matrix.
 def neighborhood_list_to_matrix(data):
     neighbors_list, num_surfaces = data["neighbors"], data["num_surfaces"]
     neighbor_matrix = np.zeros((num_surfaces, num_surfaces))
@@ -534,6 +548,7 @@ def neighborhood_list_to_matrix(data):
 
     return neighbor_matrix
 
+# Create a matrix of pairwise distances between surfaces using the distance heuristic for 3D space.
 def create_depth_extend_distance_matrix(data):
     depth_extend, num_surfaces = data["depth_extend"], data["num_surfaces"]
     distances = np.zeros((num_surfaces, num_surfaces))
@@ -544,6 +559,7 @@ def create_depth_extend_distance_matrix(data):
             distances[j, i] = d
     return distances
 
+# Check for possible occlusion for each pair of surfaces in the image.
 def determine_occlusion_candidates_and_connection_info(closest_points, data):
     surfaces, norm_image, num_surfaces = data["surfaces"], data["norm"], data["num_surfaces"]
     occlusion_matrix = np.zeros((num_surfaces, num_surfaces))
@@ -629,6 +645,7 @@ def calculate_nearest_points_calc(patch_points, border_centers, max_num):
             results[i][j] = patch_points[i][np.argmin(diffs[j])]
     return results
 
+# The heuristic for determining a point on one surface that is very close to another surface.
 def calculate_nearest_points(point_sets, target_points):
     max_num = max([len(a) for a in target_points])
     with warnings.catch_warnings():
@@ -636,12 +653,14 @@ def calculate_nearest_points(point_sets, target_points):
         results = calculate_nearest_points_calc(point_sets, target_points, max_num)
     return [results[i][:len(target_points[i])] for i in range(len(target_points))]
 
+# Calculate a dissimilarity matrix given the texture scores for all surfaces.
 def calculate_texture_similarities(texture_vecs, num_surfaces):
     vecs_1 = np.tile(np.expand_dims(texture_vecs, axis=0), [num_surfaces, 1, 1])
     vecs_2 = np.tile(np.expand_dims(texture_vecs, axis=1), [1, num_surfaces, 1])
     diff = vecs_1 - vecs_2
     return np.linalg.norm(diff, axis=-1)/256
 
+# Calculate the ratio of surface size and distance between two surfaces.
 def calc_depth_extend_to_depth_extend_distance_ratio(data):
     average_depth_extends_objects = np.sum(np.abs(np.subtract(data["depth_extend"][:,:,0], data["depth_extend"][:,:,1])), axis=-1, keepdims=True)/4
     average_depth_extends_pairs = (np.tile(average_depth_extends_objects, [1, data["num_surfaces"]]) +
@@ -649,7 +668,6 @@ def calc_depth_extend_to_depth_extend_distance_ratio(data):
     ratio = data["depth_extend_distances"] / average_depth_extends_pairs
     ratio[np.isnan(ratio)] = 0
     return ratio
-
 
 def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model):
     data["patch_points"] = extract_individual_points_from_surfaces(data["patches"], data["num_surfaces"])
@@ -670,7 +688,7 @@ def extract_information_from_surface_data_and_preprocess_surfaces(data, texture_
     data["depth_extend_distances"] = create_depth_extend_distance_matrix(data)/1000
     data["depth_extend_distance_ratio"] = calc_depth_extend_to_depth_extend_distance_ratio(data)
 
-def find_optimal_surface_joins_from_annotation(data):
+def find_optimal_surface_links_from_annotation(data):
     annotation, surfaces, num_surfaces, num_boxes = data["annotation"], data["surfaces"], data["num_surfaces"], data["num_bboxes"]
     num_annotations = np.max(annotation)
     annotation_counter = np.zeros((num_surfaces, num_annotations+1))
@@ -700,13 +718,15 @@ def find_optimal_surface_joins_from_annotation(data):
     Y = np.pad(np.stack([Y_1, Y_2], axis=0), ((0, 0), (0, num_boxes), (0, num_boxes)))
     return np.asarray([Y[:, 1:, 1:]])
 
+# Wrapper for calculating the pairs of close points for each pair of surfaces as well as the possible occlusion between them using the pairs of points.
 def get_position_and_occlusion_info(data):
     avg_positions, patch_points, surfaces, norm_image, num_surfaces = data["avg_pos"], data["patch_points"], data["surfaces"], data["norm"], data["num_surfaces"]
     input = determine_occlusion_line_points(np.ones((num_surfaces, num_surfaces)), patch_points, avg_positions, num_surfaces)
     nearest_points_for_occlusion = calculate_nearest_points(*input)
-    join_matrix, close_matrix, closest_points = determine_occlusion_candidates_and_connection_info(nearest_points_for_occlusion, data)
-    return join_matrix, close_matrix, closest_points
+    link_matrix, close_matrix, closest_points = determine_occlusion_candidates_and_connection_info(nearest_points_for_occlusion, data)
+    return link_matrix, close_matrix, closest_points
 
+# Wrapper for determining the convexity/concavity of pairs of surfaces.
 def determine_convexly_connected_surfaces(candidates, data):
     patch_points, neighbors, border_centers, normal_angles, surfaces, points_3d, coplanarity, norm_image = data["patch_points"],\
                  data["neighbors"], data["border_centers"], data["angles"], data["surfaces"], data["points_3d"], data["coplanarity"], data["norm"]
@@ -754,16 +774,14 @@ def create_similarity_feature_matrix(data):
     keys = ["bbox_similarity_matrix", "sim_texture", "sim_color", "sim_angle", "convex", "coplanarity", "neighborhood_mat",
             "concave", "distances", "occlusion_mat", "depth_extend_distances", "same_plane_type", "both_curved", "depth_extend_distance_ratio"]
     matrix = np.stack([data[key][1:,1:] for key in keys], axis=-1)
-    #matrix[:, :, 11] = matrix[:, :, 11] / 1000
-    #matrix[:, : , 8] = matrix[:, : , 8] / 500
     return matrix
 
 @njit()
-def join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_surfaces):
+def link_surfaces_according_to_link_matrix(link_matrix, surfaces, num_surfaces):
     labels = np.arange(num_surfaces)
     for i in range(num_surfaces):
         for j in range(i + 1, num_surfaces):
-            if join_matrix[i][j] >= 1:
+            if link_matrix[i][j] >= 1:
                 l = labels[j]
                 new_l = labels[i]
                 for k in range(num_surfaces):
@@ -774,11 +792,12 @@ def join_surfaces_according_to_join_matrix(join_matrix, surfaces, num_surfaces):
             surfaces[y][x] = labels[surfaces[y][x]]
     return surfaces, labels
 
-def determine_disconnected_join_candidates(relabeling, candidates, data):
+# Wrapper for determining links between disconnected surfaces in the rule-based system.
+def determine_disconnected_link_candidates(relabeling, candidates, data):
     candidates_all = candidates["occlusion"] + candidates["occlusion_coplanar"] + candidates["curved"]
     candidates_all[candidates_all > 1] = 1
     input = determine_occlusion_line_points(candidates_all, data["patch_points"], data["avg_pos"], data["num_surfaces"])
     if len(input[0]) == 0: return np.zeros((data["num_surfaces"], data["num_surfaces"])), data["surfaces"]
     closest_points = calculate_nearest_points(*input)
-    join_matrix, new_surfaces = determine_occlusion(candidates_all, candidates, closest_points, relabeling, data)
-    return join_matrix, new_surfaces
+    link_matrix, new_surfaces = determine_occlusion(candidates_all, candidates, closest_points, relabeling, data)
+    return link_matrix, new_surfaces

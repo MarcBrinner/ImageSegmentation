@@ -46,7 +46,9 @@ def mean_field_iteration(unary_potentials, pairwise_potentials, Q, num_labels, m
     new_Q = tf.math.divide_no_nan(new_Q, tf.reduce_sum(new_Q, axis=-1, keepdims=True))
     return new_Q
 
-def mean_field_CRF(feature_processing_model, num_iterations=60, num_features=config.num_pairwise_features, use_boxes=True):
+# This function defines the interaction model CRF in a form that allows to train a differentiable classifier through it.
+# The "use_boxes" argument tests a different CRF formulation that is not present in the thesis because it did not work that well.
+def mean_field_CRF(classifier, num_iterations=60, num_features=config.num_pairwise_features, use_boxes=False):
     features = layers.Input(shape=(None, None, num_features), name="features")
     boxes = layers.Input(shape=(None, None), name="boxes")
 
@@ -58,7 +60,7 @@ def mean_field_CRF(feature_processing_model, num_iterations=60, num_features=con
     boxes_pad = tf.pad(boxes_dense, [[0, 0], [num_surfaces, 0], [0, num_boxes]])
     boxes_pad = boxes_pad + tf.transpose(boxes_pad, perm=[0, 2, 1])
 
-    pairwise_potentials_pred = feature_processing_model(features)
+    pairwise_potentials_pred = classifier(features)
     pairwise_potentials = pairwise_potentials_pred * 0.99 + 0.005
     pairwise_potentials = tf.math.log(tf.math.divide_no_nan(pairwise_potentials, 1-pairwise_potentials))
     pairwise_potentials = tf.pad(pairwise_potentials, [[0, 0], [0, num_boxes], [0, num_boxes]])
@@ -87,10 +89,11 @@ def mean_field_CRF(feature_processing_model, num_iterations=60, num_features=con
 
     return model
 
+# Train the differentiable classifier and the few CRF parameters through the CRF.
 def train_CRF(clf_type, use_boxes=True):
     pw_clf = get_pairwise_clf(clf_type)
     CRF = mean_field_CRF(pw_clf, use_boxes=use_boxes)
-    crf_tools.train_CRF(CRF, f"parameters/CRF_trained_with_clf/{clf_type}.ckpt")
+    crf_tools.train_CRF(CRF, f"parameters/CRF_trained_with_clf/{clf_type}_{use_boxes}.ckpt")
 
 def assemble_objects(crf, models, data):
     ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
@@ -102,8 +105,11 @@ def assemble_objects(crf, models, data):
     data["final_surfaces"] = crf_tools.create_surfaces_from_crf_output(prediction[0, -1], data["surfaces"])
     return data
 
-def assemble_objects_for_indices(indices=config.test_indices, clf_type="LR", plot=True):
+# A method to perform the object assembling operation for a list of indices from the train/test set.
+# To do this, the surfaces need to be already detected and saved previously.
+def assemble_objects_for_indices(indices=config.test_indices, clf_type="LR", do_post_processing=True, plot=True):
     models = crf_tools.get_GPU_models()
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
 
     pw_clf = get_pairwise_clf(clf_type)
 
@@ -113,7 +119,7 @@ def assemble_objects_for_indices(indices=config.test_indices, clf_type="LR", plo
     for index in indices:
         print(index)
         data = load_images.load_image_and_surface_information(index)
-        data = assemble_objects(crf, models, data)
+        data = post_processing_model(assemble_objects(crf, models, data))
 
         if plot:
             plot_image.plot_surfaces(data["final_surfaces"])
@@ -121,22 +127,24 @@ def assemble_objects_for_indices(indices=config.test_indices, clf_type="LR", plo
         results.append(data["final_surfaces"])
     return results
 
+# Returns a function for segmenting a new image, including the detection of surfaces and post-processing (if wanted).
 def get_full_prediction_model(clf_type="LR", use_boxes=False, do_post_processing=False):
     surface_model = find_surface_model()
-    post_processing_model = post_processing.get_postprocessing_model(do_post_processing)
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
     assemble_surface_models = crf_tools.get_GPU_models()
     pw_clf = get_pairwise_clf(clf_type)
 
     crf = mean_field_CRF(pw_clf, use_boxes=use_boxes)
     try:
-        crf.load_weights(f"parameters/CRF_trained_with_clf/{clf_type}.ckpt")
+        crf.load_weights(f"parameters/CRF_trained_with_clf/{clf_type}_{use_boxes}.ckpt")
     except:
         print("No parameters found. Please train the model first.")
+        quit()
 
-    return lambda x, y: post_processing_model(assemble_objects(crf, assemble_surface_models, load_images.load_image_and_surface_information(y)))
+    return lambda x: post_processing_model(assemble_objects(crf, assemble_surface_models, surface_model(x)))
 
 def main():
     assemble_objects_for_indices([7, 88, 102], clf_type="Neural")
 
 if __name__ == '__main__':
-    train_CRF("LR", use_boxes=True)
+    train_CRF("Neural", use_boxes=False)

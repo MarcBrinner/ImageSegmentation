@@ -85,7 +85,7 @@ class Calc_Angles(layers.Layer):
 
 class Depth_Cutoff(layers.Layer):
     def call(self, input, middle):
-        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.math.divide_no_nan(y-y[middle], y[middle])), 0.2), tf.zeros_like(y), tf.ones_like(y)), x), input)
+        return tf.vectorized_map(lambda x: tf.vectorized_map(lambda y: tf.where(tf.greater(tf.abs(tf.math.divide_no_nan(y-y[middle], y[middle])), 0.3), tf.zeros_like(y), tf.ones_like(y)), x), input)
 
 class Gauss_Weights(layers.Layer):
     def call(self, input, middle, sigma, mask):
@@ -101,7 +101,7 @@ class Depth_Factors(layers.Layer):
 
 def uniform_filter_with_depth_cutoff(image, depth_image, window, middle, dimension, vals_per_window):
     patches = tf.reshape(tf.image.extract_patches(image, window, padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), (height, width, vals_per_window, dimension))
-    depth_patches = tf.squeeze(tf.image.extract_patches(depth_image, window, padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), axis=0)
+    depth_patches = tf.squeeze(tf.image.extract_patches(tf.expand_dims(tf.expand_dims(depth_image, axis=-1), axis=0), window, padding="SAME", strides=[1, 1, 1, 1], rates=[1, 1, 1, 1]), axis=0)
     mult_values = Depth_Cutoff()(depth_patches, middle)
     sums = tf.reduce_sum(mult_values, axis=-1, keepdims=True)
     val_sums = tf.reduce_sum(tf.multiply(tf.expand_dims(mult_values, axis=-1), patches), axis=-2)

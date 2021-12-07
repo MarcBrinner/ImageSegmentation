@@ -15,6 +15,7 @@ def get_GPU_models():
            extract_texture_function(), \
            get_object_detector()
 
+# Create a training set to train the parameters of the interaction model.
 def create_CRF_training_set():
     models = get_GPU_models()
     bbox_overlap_list = []
@@ -37,6 +38,7 @@ def create_CRF_training_set():
     pickle.dump(Y_list, open("data/train_object_assemble_CRF_dataset/Y.pkl", "wb"))
     pickle.dump(bbox_overlap_list, open("data/train_object_assemble_CRF_dataset/bbox.pkl", "wb"))
 
+# Find the surface clusters that form the final object masks from the output probabilities of the mean field update.
 def create_surfaces_from_crf_output(prediction, surfaces):
     max_vals = np.argmax(prediction, axis=-1)
     new_surfaces = surfaces.copy()
@@ -45,10 +47,21 @@ def create_surfaces_from_crf_output(prediction, surfaces):
             new_surfaces[new_surfaces == i+1] = max_vals[i]+1
     return new_surfaces
 
+# This method allows training the two CRF models, with differentiable classifiers inside the model or with pretrained classifiers outside of it.
 def train_CRF(CRF, save_path, pw_clf=None):
-    features = pickle.load(open("data/train_object_assemble_CRF_dataset/features.pkl", "rb"))
-    Y = pickle.load(open("data/train_object_assemble_CRF_dataset/Y.pkl", "rb"))
-    boxes = pickle.load(open("data/train_object_assemble_CRF_dataset/bbox.pkl", "rb"))
+    try:
+        features = pickle.load(open("data/train_object_assemble_CRF_dataset/features.pkl", "rb"))
+        Y = pickle.load(open("data/train_object_assemble_CRF_dataset/Y.pkl", "rb"))
+        boxes = pickle.load(open("data/train_object_assemble_CRF_dataset/bbox.pkl", "rb"))
+    except:
+        try:
+            create_CRF_training_set()
+            features = pickle.load(open("data/train_object_assemble_CRF_dataset/features.pkl", "rb"))
+            Y = pickle.load(open("data/train_object_assemble_CRF_dataset/Y.pkl", "rb"))
+            boxes = pickle.load(open("data/train_object_assemble_CRF_dataset/bbox.pkl", "rb"))
+        except:
+            print("Failed to load files.")
+            quit()
 
     def gen():
         indices = list(range(len(features)))

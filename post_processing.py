@@ -12,9 +12,10 @@ def apply_CRF(data, CRF):
     inputs = get_inputs(features, unary_potentials, initial_Q, 7, div_x, div_y, size_x, size_y)
     out = CRF.predict(inputs, batch_size=1)
     Q = assemble_outputs(out, div_x, div_y, size_x, size_y, height, width)
-    Q[data["depth"] == 0] = prob
+    Q[data["depth"] == 0] = 0
     #plot_image.plot_surfaces(data["final_surfaces"])
     data["final_surfaces"] = np.argmax(Q, axis=-1)
+    data["final_surfaces"][data["final_surfaces"] == np.max(data["final_surfaces"])] = 0
     data["final_surfaces"][data["final_surfaces"] == data["num_surfaces"]] = 0
     #plot_image.plot_surfaces(data["final_surfaces"])
     return data

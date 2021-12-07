@@ -1,4 +1,5 @@
 import find_surfaces
+import plot_image
 import post_processing
 import process_surfaces as ps
 from config import *
@@ -11,9 +12,10 @@ parameters_candidates = [(0.6, 0.5, 7, 2, 1), (0.8, 1, 7), (0.8, 0.7, 1.15)]
 def get_GPU_models():
     return chi_squared_distances_model_2D((10, 10), (4, 4)), \
            chi_squared_distances_model_2D((4, 4), (1, 1)), \
-           extract_texture_function(), \
+           extract_texture_function()
 
-def determine_join_candidates(data, thresholds):
+# Creates the similarity sets that determine possible link candidates in further processing steps.
+def determine_link_candidates(data, thresholds):
     texture_similarities, color_similarities, normal_similarities, planes, num_surfaces = data["sim_texture"], data["sim_color"],\
                       data["sim_angle"], data["planes"], data["num_surfaces"]
     similar_patches_2 = np.zeros_like(texture_similarities)
@@ -59,9 +61,10 @@ def determine_join_candidates(data, thresholds):
     candidates["convexity"] = similar_patches_4
     return candidates
 
-def remove_concave_connections(join_matrices, data):
+# The procedure to prevent higher-order links between surfaces with concave connections.
+def remove_concave_connections(link_matrices, data):
     similarity = data["sim_color"] + data["sim_texture"]
-    join_matrix_occlusion, join_matrix_before_occlusion = join_matrices["disconnected"], join_matrices["convex"]
+    link_matrix_occlusion, link_matrix_before_occlusion = link_matrices["disconnected"], link_matrices["convex"]
     centroids, depth_image, coplanarity, concave, num_surfaces = data["centroids"], data["depth"], data["coplanarity"], data["concave"], data["num_surfaces"]
 
     groups = []
@@ -71,7 +74,7 @@ def remove_concave_connections(join_matrices, data):
 
     for i in range(num_surfaces):
         for j in range(i+1, num_surfaces):
-            if join_matrix_before_occlusion[i][j] > 0:
+            if link_matrix_before_occlusion[i][j] > 0:
                 groups[i].update(groups[j])
                 groups[j].update(groups[i])
 
@@ -79,7 +82,7 @@ def remove_concave_connections(join_matrices, data):
     distances = np.zeros((num_surfaces, num_surfaces))
     for i in range(num_surfaces):
         for j in range(i+1, num_surfaces):
-            if join_matrix_occlusion[i][j] > 0 and join_matrix_before_occlusion[i][j] == 0:
+            if link_matrix_occlusion[i][j] > 0 and link_matrix_before_occlusion[i][j] == 0:
                 pairs.append((i, j))
                 d = np.linalg.norm(centroids[i] - centroids[j])
                 distances[i][j] = d
@@ -90,67 +93,70 @@ def remove_concave_connections(join_matrices, data):
     n_1 = average_depth * math.tan(viewing_angle_x) * 1.5
     n_2 = np.max(distances)*4
 
-    joins = {}
+    links = {}
     for i, j in pairs:
         distance_factor_1 = distances[i][j]/n_2
         distance_factor_2 = distances[i][j]/n_1
         similarity_factor = similarity[i][j]
         coplanar_factor = -0.15 if coplanarity[i][j] else 0
-        join_probability_value = distance_factor_1 + distance_factor_2 + similarity_factor + coplanar_factor
-        joins[join_probability_value] = (i, j)
+        link_probability_value = distance_factor_1 + distance_factor_2 + similarity_factor + coplanar_factor
+        links[link_probability_value] = (i, j)
 
-    final_join_matrix = join_matrix_before_occlusion.copy()
-    for value, (x, y) in sorted(joins.items(), key=lambda x: float(x[0])):
+    final_link_matrix = link_matrix_before_occlusion.copy()
+    for value, (x, y) in sorted(links.items(), key=lambda x: float(x[0])):
         if x in groups[y]:
             continue
-        join = True
+        link = True
         for i in groups[x]:
             for j in groups[y]:
                 if concave[i][j]:
-                    join = False
+                    link = False
                     break
-            if not join:
+            if not link:
                 break
-        if join:
+        if link:
             complete_set = set()
             complete_set.update(groups[x])
             complete_set.update(groups[y])
             for index in complete_set:
                 groups[index].update(complete_set)
-            final_join_matrix[x][y] = 1
-            final_join_matrix[y][x] = 1
+            final_link_matrix[x][y] = 1
+            final_link_matrix[y][x] = 1
 
-    return final_join_matrix
+    return final_link_matrix
 
+# Assemble objects using the rule-based system.
 def assemble_objects(data, models):
     color_similarity_model, angle_similarity_model, texture_model = models
-    #plot_surfaces(data["surfaces"])
     ps.extract_information_from_surface_data_and_preprocess_surfaces(data, texture_model)
 
     data["sim_color"] = color_similarity_model(data["hist_color"])
     data["sim_angle"] = angle_similarity_model(data["hist_angle"])
     data["sim_texture"] = ps.calculate_texture_similarities(data["hist_texture"], data["num_surfaces"])
 
-    join_candidates = determine_join_candidates(data, parameters_candidates)
+    link_candidates = determine_link_candidates(data, parameters_candidates)
 
-    data["coplanarity"] = ps.determine_coplanarity(join_candidates["occlusion_coplanar"], data["centroids"].astype("float64"), data["avg_normals"], data["planes"], data["num_surfaces"])
-    join_candidates["occlusion_coplanar"] = join_candidates["occlusion_coplanar"]*data["coplanarity"]
-    join_candidates["occlusion"][data["depth_extend_distance_ratio"] > 5] = 0
+    data["coplanarity"] = ps.determine_coplanarity(link_candidates["occlusion_coplanar"], data["centroids"].astype("float64"), data["avg_normals"], data["planes"], data["num_surfaces"])
+    link_candidates["occlusion_coplanar"] = link_candidates["occlusion_coplanar"]*data["coplanarity"]
+    link_candidates["occlusion"][data["depth_extend_distance_ratio"] > 5] = 0
 
-    join_surfaces = {}
-    join_surfaces["convex"], data["concave"], new_surfaces = ps.determine_convexly_connected_surfaces(join_candidates["convexity"], data)
-    _, relabeling = ps.join_surfaces_according_to_join_matrix(join_surfaces["convex"], data["surfaces"].copy(), data["num_surfaces"])
-    join_surfaces["disconnected"], new_surfaces = ps.determine_disconnected_join_candidates(relabeling, join_candidates, data)
-    join_surfaces["final"] = remove_concave_connections(join_surfaces, data)
+    link_surfaces = {}
+    link_surfaces["convex"], data["concave"], new_surfaces = ps.determine_convexly_connected_surfaces(link_candidates["convexity"], data)
 
-    surfaces, _ = ps.join_surfaces_according_to_join_matrix(join_surfaces["final"], data["surfaces"], data["num_surfaces"])
+    _, relabeling = ps.link_surfaces_according_to_link_matrix(link_surfaces["convex"], data["surfaces"].copy(), data["num_surfaces"])
+    link_surfaces["disconnected"], new_surfaces = ps.determine_disconnected_link_candidates(relabeling, link_candidates, data)
+    link_surfaces["final"] = remove_concave_connections(link_surfaces, data)
+
+    surfaces, _ = ps.link_surfaces_according_to_link_matrix(link_surfaces["final"], data["surfaces"], data["num_surfaces"])
 
     data["final_surfaces"] = surfaces
     return data
 
+# A method to perform the object assembling operation for a list of indices from the train/test set.
+# To do this, the surfaces need to be already detected and saved previously.
 def assemble_objects_for_indices(indices, do_post_processing=True, plot=True):
     models = get_GPU_models()
-    post_processing_model = post_processing.get_postprocessing_model(do_post_processing)
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
     results = []
     for index in range(len(indices)):
         print(index)
@@ -163,14 +169,12 @@ def assemble_objects_for_indices(indices, do_post_processing=True, plot=True):
         results.append(data["final_surfaces"])
     return results
 
+# Returns a function for segmenting a new image, including the detection of surfaces and post-processing (if wanted).
 def get_full_prediction_model(do_post_processing=True):
     surface_model = find_surfaces.find_surface_model()
-    post_processing_model = post_processing.get_postprocessing_model(do_post_processing)
+    post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
     assemble_surface_models = get_GPU_models()
-    return lambda x, y: post_processing_model(assemble_objects(load_image_and_surface_information(y), assemble_surface_models))
-
-def main():
-    assemble_objects_for_indices(test_indices)
+    return lambda x: post_processing_model(assemble_objects(surface_model(x), assemble_surface_models))
 
 if __name__ == '__main__':
-    main()
+    pass

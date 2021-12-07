@@ -7,8 +7,7 @@ import shutil
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-import config
-from config import *
+import config as cf
 from core.yolov3 import YOLOv3, decode, compute_loss
 from core import utils, dataset, config
 from PIL import Image
@@ -60,7 +59,7 @@ def get_object_detector(weights=None):
 
 def main():
     detector = get_object_detector_model()
-    for i in config.test_indices:
+    for i in cf.test_indices:
         _, rgb, _  = load_images.load_image(i)
         bboxes = detect_objects(detector, rgb)
         show_bounding_boxes(rgb, bboxes)
