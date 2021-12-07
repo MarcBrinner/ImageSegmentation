@@ -82,7 +82,23 @@ with the `index` parameter specifying the index of the image from the data set t
 - `def evaluate_models()`: This method allows calculating the AvgIoU score for the given model specified
 by the parameters. These parameters are similar to the `detect_objects_for_dataset()` function.
 
-The time required to create a segmentation of an image can differ from the time reported in the thesis,
+Sometimes the data sets that are used to train the models need to be recreated. This can have different reasons:
+- For the data set used to train the pixel similarity function, the reason could be that a different data set
+is wanted because the data set creation is random and might influence the performance of the classifier.
+- For the data sets used to train the pairwise surface link classifiers (alone or through the CRF)
+the reason for recreating these training sets could be that the model for detecting surfaces has been
+retrained. Then, the classifiers need to be retrained as well on these new surfaces.
+
+The retraining of the data sets has to be done manually in this case, which can be done using the following methods
+from the `main.py` file:
+- `recreate_pixel_similarity_data_set()`
+- `recreate_surface_link_data_set()`
+- `recreate_crf_data_set()`
+
+
+
+Note: The time required to create a segmentation of an image can differ from the time reported in the thesis,
 because the segmentation of the first image always requires additional time. This is due to delays in
 the initialization of the tensorflow models, and because the numba package is used which creates C
 code from python code, which is done during the first segmentation as well and thus takes additional time.
+

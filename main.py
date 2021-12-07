@@ -10,6 +10,15 @@ clf_types = ["LR", "Neural", "Tree", "Forest"]
 training_set_indices = config.train_indices
 test_set_indices = config.test_indices
 
+def recreate_pixel_similarity_data_set():
+    find_surfaces.create_training_dataset()
+
+def recreate_surface_link_data_set():
+    assemble_objects_pairwise_clf.create_pairwise_clf_training_set()
+
+def recreate_crf_data_set():
+    assemble_objects_CRF.crf_tools.create_CRF_training_set()
+
 def train_pixel_similarity_function():
     find_surfaces.train_Gauss_clf()
 
