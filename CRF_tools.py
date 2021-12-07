@@ -27,7 +27,7 @@ def create_CRF_training_set():
         ps.calculate_pairwise_similarity_features_for_surfaces(data, models)
         similarity_matrix = ps.create_similarity_feature_matrix(data)
 
-        Y = ps.find_optimal_surface_joins_from_annotation(data)
+        Y = ps.find_optimal_surface_links_from_annotation(data)
         bbox_overlap = data["bbox_overlap"][:, 1:]
 
         bbox_overlap_list.append(bbox_overlap)
@@ -87,13 +87,13 @@ def train_CRF(CRF, save_path, pw_clf=None):
 def custom_loss_CRF(y_actual, y_predicted):
     pred_pot = y_predicted[:, 0, :, :]
     pred_Q = y_predicted[:, 25, :, :]
-    join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1))
-    not_join_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1))
+    link_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [0], axis=1), axis=1))
+    not_link_matrix = layers.Dropout(0.2)(tf.squeeze(tf.gather(y_actual, [1], axis=1), axis=1))
 
     num_labels = tf.shape(pred_Q)[2]
 
-    LR_labels = tf.ones_like(pred_pot) * (1-not_join_matrix)
-    LR_weights = 1- (tf.ones_like(pred_pot) * (1- (join_matrix + not_join_matrix)))
+    LR_labels = tf.ones_like(pred_pot) * (1-not_link_matrix)
+    LR_weights = 1- (tf.ones_like(pred_pot) * (1- (link_matrix + not_link_matrix)))
 
     LR_loss = losses.BinaryCrossentropy(from_logits=False)(tf.expand_dims(LR_labels, axis=-1), tf.expand_dims(pred_pot, axis=-1), LR_weights)
 
@@ -109,11 +109,11 @@ def custom_loss_CRF(y_actual, y_predicted):
     #label_1_loss = tf.math.log(tf.where(tf.equal(sum_out, 0), tf.ones_like(sum_out), sum_out))
     label_1_loss = tf.math.log(sum_out)
 
-    positive_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(join_matrix, label_1_loss), axis=-1), axis=-1)
-    negative_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(not_join_matrix, label_0_loss), axis=-1),axis=-1)
+    positive_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(link_matrix, label_1_loss), axis=-1), axis=-1)
+    negative_error = -tf.reduce_sum(tf.reduce_sum(tf.math.multiply_no_nan(not_link_matrix, label_0_loss), axis=-1),axis=-1)
 
-    num_joins = tf.reduce_sum(tf.reduce_sum(join_matrix, axis=-1), axis=-1)
-    num_not_joins = tf.reduce_sum(tf.reduce_sum(not_join_matrix, axis=-1), axis=-1)
+    num_links = tf.reduce_sum(tf.reduce_sum(link_matrix, axis=-1), axis=-1)
+    num_not_links = tf.reduce_sum(tf.reduce_sum(not_link_matrix, axis=-1), axis=-1)
 
     Q_loss = positive_error + negative_error + LR_loss * 5
     return Q_loss

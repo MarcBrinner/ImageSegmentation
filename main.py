@@ -61,4 +61,4 @@ def evaluate_models(model_type="Pairs", clf_type="Forest", use_CRF=True, do_post
                                    "use_boxes": False})
 
 if __name__ == '__main__':
-    pass
+    evaluate_models()

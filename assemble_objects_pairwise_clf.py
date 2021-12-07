@@ -313,9 +313,9 @@ def get_full_prediction_model(clf_type="Forest", use_CRF=True, use_boxes=False, 
                 CRF.load_weights(f"parameters/CRF_trained_without_clf/{clf_type}.ckpt")
             except:
                 print("No trained parameters found. Using default parameters instead.")
-        return lambda x, y: post_processing_model(assemble_objects_crf(clf, assemble_surface_models, CRF, surface_model(x)))
+        return lambda x: post_processing_model(assemble_objects_crf(clf, assemble_surface_models, CRF, surface_model(x)))
     else:
-        return lambda x, y: post_processing_model(assemble_objects_with_pairwise_classifier(clf, assemble_surface_models, surface_model(x)))
+        return lambda x: post_processing_model(assemble_objects_with_pairwise_classifier(clf, assemble_surface_models, surface_model(x)))
 
 if __name__ == '__main__':
     train_pairwise_classifier("Neural")

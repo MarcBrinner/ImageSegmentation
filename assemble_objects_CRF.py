@@ -107,14 +107,14 @@ def assemble_objects(crf, models, data):
 
 # A method to perform the object assembling operation for a list of indices from the train/test set.
 # To do this, the surfaces need to be already detected and saved previously.
-def assemble_objects_for_indices(indices=config.test_indices, clf_type="LR", do_post_processing=True, plot=True):
+def assemble_objects_for_indices(indices=config.test_indices, clf_type="LR", do_post_processing=True, plot=True, use_boxes=False):
     models = crf_tools.get_GPU_models()
     post_processing_model = post_processing.get_postprocessing_model(do_post_processing=do_post_processing)
 
     pw_clf = get_pairwise_clf(clf_type)
 
-    crf = mean_field_CRF(pw_clf)
-    crf.load_weights(f"data/CRF_pairwise_clf/{clf_type}.ckpt")
+    crf = mean_field_CRF(pw_clf, use_boxes=use_boxes)
+    crf.load_weights(f"parameters/CRF_trained_with_clf/{clf_type}_{use_boxes}.ckpt")
     results = []
     for index in indices:
         print(index)
