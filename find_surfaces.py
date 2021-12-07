@@ -214,7 +214,7 @@ def train_Gauss_clf():
 
 # Load the parameters of the similarity function based on the logistic regression model.
 def load_pixel_similarity_parameters():
-    clf = pickle.load(open("parameters/pixel_similarity_clf/clf_2.pkl", "rb"))
+    clf = pickle.load(open("parameters/pixel_similarity_clf/clf.pkl", "rb"))
     return clf.coef_, clf.intercept_ + 4
 
 # Load the parameters of the similarity function based on the Gaussian kernels.

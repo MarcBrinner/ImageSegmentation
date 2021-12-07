@@ -1,11 +1,14 @@
 import find_surfaces
 import assemble_objects_CRF, assemble_objects_rules, assemble_objects_pairwise_clf
 import evaluate_models as em
+import config
 from load_images import load_image
 from plot_image import plot_surfaces
 
 model_types = ["Rules", "Pairs", "CRF"]
 clf_types = ["LR", "Neural", "Tree", "Forest"]
+training_set_indices = config.train_indices
+test_set_indices = config.test_indices
 
 def train_pixel_similarity_function():
     find_surfaces.train_Gauss_clf()
